@@ -1,0 +1,200 @@
+import { useCallback, useEffect, useState } from 'react'
+import { ApiError, getShortUrl, listUrls, type UrlStats } from './api.ts'
+import { copyText } from './copy.ts'
+
+type LoadState =
+  | { kind: 'loading' }
+  | { kind: 'ready'; urls: UrlStats[] }
+  | { kind: 'error'; message: string }
+
+type DashboardProps = {
+  onCreate: () => void
+}
+
+export function Dashboard({ onCreate }: DashboardProps) {
+  const [state, setState] = useState<LoadState>({ kind: 'loading' })
+  const [refreshing, setRefreshing] = useState(false)
+  const [copiedId, setCopiedId] = useState<string | null>(null)
+
+  const load = useCallback(async () => {
+    try {
+      const urls = await listUrls()
+      setState({ kind: 'ready', urls })
+    } catch (error) {
+      setState({
+        kind: 'error',
+        message:
+          error instanceof ApiError || error instanceof Error
+            ? error.message
+            : 'Could not load click stats',
+      })
+    }
+  }, [])
+
+  async function handleRefresh() {
+    setRefreshing(true)
+    await load()
+    setRefreshing(false)
+  }
+
+  useEffect(() => {
+    void load()
+
+    function onFocus() {
+      void load()
+    }
+
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
+  }, [load])
+
+  useEffect(() => {
+    if (!copiedId) {
+      return
+    }
+
+    const timer = window.setTimeout(() => setCopiedId(null), 1600)
+    return () => window.clearTimeout(timer)
+  }, [copiedId])
+
+  async function handleCopy(id: string, shortUrl: string) {
+    try {
+      await copyText(shortUrl)
+      setCopiedId(id)
+    } catch {
+      setCopiedId(null)
+    }
+  }
+
+  const urls = state.kind === 'ready' ? state.urls : []
+  const totalClicks = urls.reduce((sum, url) => sum + url.clickCount, 0)
+  const activeCount = urls.filter((url) => !isExpired(url.expiresAt)).length
+
+  return (
+    <div className="dash">
+      <div className="dash-intro">
+        <div>
+          <p className="kicker">Click tracking</p>
+          <h1 className="headline">
+            See which links
+            <br />
+            <span className="headline-accent">get used.</span>
+          </h1>
+          <p className="lede">
+            Every successful redirect is counted. Open a short URL to add a
+            click, then come back to this page.
+          </p>
+        </div>
+        <div className="dash-actions">
+          <button
+            className="button button-ghost"
+            type="button"
+            onClick={() => {
+              void handleRefresh()
+            }}
+            disabled={state.kind === 'loading' || refreshing}
+          >
+            {state.kind === 'loading' || refreshing ? 'Refreshing…' : 'Refresh'}
+          </button>
+          <button className="button button-primary" type="button" onClick={onCreate}>
+            Shorten URL
+          </button>
+        </div>
+      </div>
+
+      <div className="metrics" aria-live="polite">
+        <div className="metric">
+          <div className="metric-value">{state.kind === 'ready' ? urls.length : '—'}</div>
+          <div className="metric-label">Links</div>
+        </div>
+        <div className="metric">
+          <div className="metric-value">{state.kind === 'ready' ? totalClicks : '—'}</div>
+          <div className="metric-label">Clicks</div>
+        </div>
+        <div className="metric">
+          <div className="metric-value">{state.kind === 'ready' ? activeCount : '—'}</div>
+          <div className="metric-label">Active</div>
+        </div>
+      </div>
+
+      <section className="console is-live dash-console" aria-live="polite">
+        <div className="console-frame" aria-hidden="true">
+          <span />
+          <span />
+          <span />
+          <span />
+        </div>
+        <div className="console-label">Short URLs</div>
+
+        {state.kind === 'loading' ? (
+          <p className="status">Loading click stats…</p>
+        ) : state.kind === 'error' ? (
+          <p className="status status-error">{state.message}</p>
+        ) : urls.length === 0 ? (
+          <div className="dash-empty">
+            <p className="status">No short URLs yet.</p>
+            <button className="button button-ghost again" type="button" onClick={onCreate}>
+              Create one
+            </button>
+          </div>
+        ) : (
+          <ul className="link-list">
+            {urls.map((url) => {
+              const shortUrl = getShortUrl(url.shortCode)
+              const expired = isExpired(url.expiresAt)
+
+              return (
+                <li key={url.id} className="link-card">
+                  <div className="link-card-top">
+                    <a
+                      className="link-short"
+                      href={shortUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      {shortUrl}
+                    </a>
+                    <button
+                      className={`button button-ghost${copiedId === url.id ? ' is-copied' : ''}`}
+                      type="button"
+                      onClick={() => {
+                        void handleCopy(url.id, shortUrl)
+                      }}
+                    >
+                      {copiedId === url.id ? 'Copied' : 'Copy'}
+                    </button>
+                  </div>
+                  <p className="original">Original · {url.originalUrl}</p>
+                  <div className="link-meta">
+                    <span className="click-count">
+                      {url.clickCount} {url.clickCount === 1 ? 'click' : 'clicks'}
+                    </span>
+                    <span>Last {formatWhen(url.lastClickedAt)}</span>
+                    <span className={expired ? 'badge badge-expired' : 'badge'}>
+                      {expired ? 'Expired' : 'Live'}
+                    </span>
+                  </div>
+                </li>
+              )
+            })}
+          </ul>
+        )}
+      </section>
+    </div>
+  )
+}
+
+function isExpired(expiresAt: string | null): boolean {
+  return Boolean(expiresAt && Date.parse(expiresAt) <= Date.now())
+}
+
+function formatWhen(iso: string | null): string {
+  if (!iso) {
+    return 'never'
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(new Date(iso))
+}

@@ -1,0 +1,18 @@
+{
+  "name": "url-shortener",
+  "private": true,
+  "workspaces": [
+    "frontend",
+    "backend"
+  ],
+  "scripts": {
+    "dev:frontend": "npm run dev -w frontend",
+    "dev:backend": "npm run dev -w backend",
+    "build:frontend": "npm run build -w frontend",
+    "build:backend": "npm run build -w backend"
+  },
+  "dependencies": {
+    "@neon/config": "^1.4.2",
+    "@neon/env": "^1.3.2"
+  }
+}
