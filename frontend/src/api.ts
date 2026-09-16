@@ -1,3 +1,5 @@
+import { getAccessToken } from './auth.ts'
+
 export type CreatedUrl = {
   id: string
   originalUrl: string
@@ -6,9 +8,22 @@ export type CreatedUrl = {
   expiresAt: string | null
 }
 
+export type ClickBreakdown = {
+  label: string
+  count: number
+}
+
+export type UrlAnalytics = {
+  devices: ClickBreakdown[]
+  browsers: ClickBreakdown[]
+  operatingSystems: ClickBreakdown[]
+  referrers: ClickBreakdown[]
+}
+
 export type UrlStats = CreatedUrl & {
   clickCount: number
   lastClickedAt: string | null
+  analytics: UrlAnalytics
 }
 
 export class ApiError extends Error {
@@ -54,7 +69,7 @@ export function getShortUrl(shortCode: string): string {
 export async function createShortUrl(originalUrl: string): Promise<CreatedUrl> {
   const payload = await requestJson('/api/urls', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...(await authHeader()) },
     body: JSON.stringify({ originalUrl }),
   })
 
@@ -66,13 +81,38 @@ export async function createShortUrl(originalUrl: string): Promise<CreatedUrl> {
 }
 
 export async function listUrls(): Promise<UrlStats[]> {
-  const payload = await requestJson('/api/urls', { cache: 'no-store' })
+  const payload = await requestJson('/api/urls', {
+    cache: 'no-store',
+    headers: await authHeader(),
+  })
 
   if (!Array.isArray(payload) || !payload.every(isUrlStats)) {
     throw new ApiError('Unexpected response from the server')
   }
 
   return payload
+}
+
+export async function updateUrlExpiration(
+  id: string,
+  expiresAt: string | null,
+): Promise<CreatedUrl> {
+  const payload = await requestJson(`/api/urls/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...(await authHeader()) },
+    body: JSON.stringify({ expiresAt }),
+  })
+
+  if (!isCreatedUrl(payload)) {
+    throw new ApiError('Unexpected response from the server')
+  }
+
+  return payload
+}
+
+async function authHeader(): Promise<HeadersInit> {
+  const token = await getAccessToken()
+  return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
 async function requestJson(path: string, init?: RequestInit): Promise<unknown> {
@@ -103,7 +143,7 @@ function messageForStatus(status: number, payload: unknown): string {
   }
 
   if (status === 404) {
-    return 'The shortening service could not be found'
+    return readErrorMessage(payload) ?? 'The shortening service could not be found'
   }
 
   if (status === 410) {
@@ -112,6 +152,10 @@ function messageForStatus(status: number, payload: unknown): string {
 
   if (status === 400) {
     return readErrorMessage(payload) ?? 'Enter a valid HTTP or HTTPS URL'
+  }
+
+  if (status === 401) {
+    return readErrorMessage(payload) ?? 'Sign in to continue'
   }
 
   return readErrorMessage(payload) ?? 'Could not shorten this URL'
@@ -154,6 +198,35 @@ function isUrlStats(payload: unknown): payload is UrlStats {
 
   return (
     typeof record.clickCount === 'number' &&
-    (record.lastClickedAt === null || typeof record.lastClickedAt === 'string')
+    (record.lastClickedAt === null || typeof record.lastClickedAt === 'string') &&
+    isUrlAnalytics(record.analytics)
+  )
+}
+
+function isUrlAnalytics(value: unknown): value is UrlAnalytics {
+  if (value === null || typeof value !== 'object') {
+    return false
+  }
+
+  const record = value as Record<string, unknown>
+
+  return (
+    isBreakdownList(record.devices) &&
+    isBreakdownList(record.browsers) &&
+    isBreakdownList(record.operatingSystems) &&
+    isBreakdownList(record.referrers)
+  )
+}
+
+function isBreakdownList(value: unknown): value is ClickBreakdown[] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (item) =>
+        item !== null &&
+        typeof item === 'object' &&
+        typeof (item as ClickBreakdown).label === 'string' &&
+        typeof (item as ClickBreakdown).count === 'number',
+    )
   )
 }

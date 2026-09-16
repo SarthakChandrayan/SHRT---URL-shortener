@@ -29,3 +29,25 @@ export function validateOriginalUrl(value: string): string | null {
 
   return null
 }
+
+export function parseExpiresInput(
+  value: string,
+): { error: string } | { expiresAt: string | null } {
+  const trimmed = value.trim()
+
+  if (!trimmed) {
+    return { expiresAt: null }
+  }
+
+  const ms = Date.parse(trimmed)
+
+  if (Number.isNaN(ms)) {
+    return { error: 'Enter a valid expiration date' }
+  }
+
+  if (ms <= Date.now()) {
+    return { error: 'Expiration must be in the future' }
+  }
+
+  return { expiresAt: new Date(ms).toISOString() }
+}

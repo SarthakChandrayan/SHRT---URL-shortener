@@ -12,16 +12,23 @@ model Url {
   id          String    @id @default(cuid())
   originalUrl String
   shortCode   String    @unique
+  userId      String?
   createdAt   DateTime  @default(now())
   expiresAt   DateTime?
   clicks      Click[]
+
+  @@index([userId])
 }
 
 model Click {
-  id        String   @id @default(cuid())
-  urlId     String
-  clickedAt DateTime @default(now())
-  url       Url      @relation(fields: [urlId], references: [id], onDelete: Cascade)
+  id         String   @id @default(cuid())
+  urlId      String
+  clickedAt  DateTime @default(now())
+  deviceType String   @default("unknown")
+  browser    String   @default("unknown")
+  os         String   @default("unknown")
+  referrer   String   @default("direct")
+  url        Url      @relation(fields: [urlId], references: [id], onDelete: Cascade)
 
   @@index([urlId])
 }

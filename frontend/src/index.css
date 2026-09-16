@@ -305,6 +305,12 @@ input {
   gap: 10px;
 }
 
+.expire-input {
+  flex: 0 1 240px;
+  width: 240px;
+  color-scheme: dark;
+}
+
 .label {
   position: absolute;
   width: 1px;
@@ -648,6 +654,47 @@ input {
   color: var(--accent-2);
 }
 
+.link-analytics {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.link-analytics p {
+  margin: 0;
+}
+
+.analytics-label {
+  display: inline-block;
+  min-width: 72px;
+  margin-right: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent-2);
+}
+
+.link-expire {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.link-expire .button {
+  height: 40px;
+  padding: 0 14px;
+  font-size: 11px;
+}
+
+.link-expire .expire-input {
+  height: 40px;
+}
+
 .badge {
   color: var(--accent);
 }
@@ -680,6 +727,164 @@ input {
   );
 }
 
+.auth-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.auth-controls .button {
+  height: 36px;
+  padding: 0 14px;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  color: var(--accent-2);
+  text-shadow: 0 1px 14px rgba(0, 0, 0, 0.85);
+  background: rgba(3, 8, 12, 0.72);
+  border-color: rgba(154, 238, 245, 0.85);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    0 0 0 1px rgba(6, 12, 16, 0.55),
+    0 8px 20px rgba(0, 0, 0, 0.35);
+}
+
+.auth-controls .button:hover:not(:disabled) {
+  color: #e8fcff;
+  background: rgba(6, 16, 20, 0.88);
+  border-color: var(--accent-2);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    0 0 0 1px rgba(6, 12, 16, 0.55),
+    0 0 18px rgba(62, 198, 216, 0.28);
+}
+
+.profile-identity {
+  margin-bottom: 22px;
+}
+
+.profile-name,
+.profile-email {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile-name {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.profile-email {
+  margin-top: 4px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.overlay-backdrop {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  cursor: pointer;
+  background: rgba(3, 6, 9, 0.72);
+  backdrop-filter: blur(6px);
+}
+
+.overlay-panel {
+  position: relative;
+  width: 100%;
+  max-width: 420px;
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  animation: rise 220ms ease-out;
+}
+
+.overlay-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid rgba(62, 198, 216, 0.35);
+  cursor: pointer;
+  font-size: 1.1rem;
+  line-height: 1;
+  transition: color 160ms ease, border-color 160ms ease;
+}
+
+.overlay-close:hover {
+  color: var(--accent-2);
+  border-color: var(--accent-2);
+}
+
+.auth-message {
+  margin-top: 0;
+  margin-bottom: 18px;
+}
+
+.auth-google {
+  width: 100%;
+  justify-content: center;
+}
+
+.auth-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 18px 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.auth-divider::before,
+.auth-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.auth-form .button {
+  margin-top: 6px;
+}
+
+.link-button {
+  padding: 0;
+  color: var(--accent-2);
+  background: transparent;
+  border: 0;
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .brand-mark,
   .short-url,
@@ -705,9 +910,15 @@ input {
   .form,
   .result-row,
   .link-card-top,
+  .link-expire,
   .dash-intro,
   .dash-actions {
     flex-direction: column;
+  }
+
+  .expire-input {
+    width: 100%;
+    flex: 1 1 auto;
   }
 
   .dash-intro {

@@ -1,4 +1,5 @@
 import type { NextFunction, Request, Response } from "express";
+import { parseClickRequest } from "./click-analytics.js";
 import { sendError } from "./errors.js";
 import { prisma } from "./prisma.js";
 
@@ -29,11 +30,22 @@ export async function redirectToOriginalUrl(
       return;
     }
 
-    await prisma.click.create({
-      data: {
-        urlId: url.id,
-      },
-    });
+    if (!req.skipClickTracking) {
+      const analytics = parseClickRequest(
+        req.get("user-agent"),
+        req.get("referer"),
+      );
+
+      await prisma.click.create({
+        data: {
+          urlId: url.id,
+          deviceType: analytics.deviceType,
+          browser: analytics.browser,
+          os: analytics.os,
+          referrer: analytics.referrer,
+        },
+      });
+    }
 
     res.redirect(302, url.originalUrl);
   } catch (error) {

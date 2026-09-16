@@ -1,8 +1,13 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { createShortUrl, getShortUrl } from './api.ts'
+import { AuthOverlay } from './AuthOverlay.tsx'
+import { useAuth } from './AuthContext.tsx'
+import { ProfileOverlay } from './ProfileOverlay.tsx'
 import { copyText } from './copy.ts'
 import { Dashboard } from './Dashboard.tsx'
 import { validateOriginalUrl } from './validate.ts'
+
+const PENDING_URL_KEY = 'shrt:pendingUrl'
 
 type Screen = 'home' | 'dashboard'
 
@@ -19,12 +24,15 @@ function readScreen(): Screen {
 const WORK_STEPS = ['Checking URL', 'Creating short code', 'Saving']
 
 function App() {
+  const { status, user, signOut } = useAuth()
   const [screen, setScreen] = useState<Screen>(readScreen)
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [copied, setCopied] = useState(false)
   const [workStep, setWorkStep] = useState(0)
   const [view, setView] = useState<View>({ kind: 'form', error: null })
+  const [authOpen, setAuthOpen] = useState(false)
+  const [profileOpen, setProfileOpen] = useState(false)
   const submittingRef = useRef(false)
 
   useEffect(() => {
@@ -67,21 +75,7 @@ function App() {
     return () => window.clearInterval(timer)
   }, [loading])
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-
-    if (submittingRef.current || loading) {
-      return
-    }
-
-    const originalUrl = input.trim()
-    const validationError = validateOriginalUrl(originalUrl)
-
-    if (validationError) {
-      setView({ kind: 'form', error: validationError })
-      return
-    }
-
+  async function performShorten(originalUrl: string) {
     submittingRef.current = true
     setLoading(true)
     setView({ kind: 'form', error: null })
@@ -106,6 +100,54 @@ function App() {
     }
   }
 
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+
+    if (submittingRef.current || loading) {
+      return
+    }
+
+    const originalUrl = input.trim()
+    const validationError = validateOriginalUrl(originalUrl)
+
+    if (validationError) {
+      setView({ kind: 'form', error: validationError })
+      return
+    }
+
+    if (status !== 'authenticated') {
+      // Hold the request until the visitor signs up/in, then resume it —
+      // even across a full-page Google OAuth redirect.
+      window.sessionStorage.setItem(PENDING_URL_KEY, originalUrl)
+      setAuthOpen(true)
+      return
+    }
+
+    await performShorten(originalUrl)
+  }
+
+  useEffect(() => {
+    if (status !== 'authenticated') {
+      return
+    }
+
+    // Always close the overlay once we're signed in, whether or not there
+    // was a pending URL waiting to be shortened.
+    setAuthOpen(false)
+
+    const pending = window.sessionStorage.getItem(PENDING_URL_KEY)
+    if (!pending) {
+      return
+    }
+
+    window.sessionStorage.removeItem(PENDING_URL_KEY)
+    setInput(pending)
+    void performShorten(pending)
+    // performShorten is stable enough for this one-shot resume; re-running
+    // it on every render identity change isn't necessary here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status])
+
   async function handleCopy(shortUrl: string) {
     try {
       await copyText(shortUrl)
@@ -116,6 +158,7 @@ function App() {
   }
 
   function handleReset() {
+    window.sessionStorage.removeItem(PENDING_URL_KEY)
     setInput('')
     setCopied(false)
     setView({ kind: 'form', error: null })
@@ -177,6 +220,36 @@ function App() {
               Dashboard
             </a>
           </nav>
+          <div className="auth-controls">
+            {status === 'authenticated' && user ? (
+              <>
+                <button
+                  className="button button-ghost"
+                  type="button"
+                  onClick={() => setProfileOpen(true)}
+                >
+                  My profile
+                </button>
+                <button
+                  className="button button-ghost"
+                  type="button"
+                  onClick={() => {
+                    void signOut()
+                  }}
+                >
+                  Sign out
+                </button>
+              </>
+            ) : (
+              <button
+                className="button button-ghost"
+                type="button"
+                onClick={() => setAuthOpen(true)}
+              >
+                Sign in
+              </button>
+            )}
+          </div>
         </div>
       </header>
 
@@ -304,6 +377,16 @@ function App() {
           <span>{screen === 'dashboard' ? 'GET /api/urls' : 'POST /api/urls'}</span>
         </div>
       </footer>
+
+      <AuthOverlay
+        open={authOpen}
+        message="Sign up or sign in to get your short link."
+        onClose={() => {
+          window.sessionStorage.removeItem(PENDING_URL_KEY)
+          setAuthOpen(false)
+        }}
+      />
+      <ProfileOverlay open={profileOpen} onClose={() => setProfileOpen(false)} />
     </div>
   )
 }
