@@ -31,9 +31,11 @@ export async function redirectToOriginalUrl(
     }
 
     if (!req.skipClickTracking) {
-      const analytics = parseClickRequest(
+      const analytics = await parseClickRequest(
         req.get("user-agent"),
         req.get("referer"),
+        req.ip ?? req.socket.remoteAddress,
+        (name) => req.get(name),
       );
 
       await prisma.click.create({
@@ -43,6 +45,7 @@ export async function redirectToOriginalUrl(
           browser: analytics.browser,
           os: analytics.os,
           referrer: analytics.referrer,
+          country: analytics.country,
         },
       });
     }

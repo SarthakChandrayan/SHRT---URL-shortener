@@ -28,6 +28,7 @@ model Click {
   browser    String   @default("unknown")
   os         String   @default("unknown")
   referrer   String   @default("direct")
+  country    String   @default("unknown")
   url        Url      @relation(fields: [urlId], references: [id], onDelete: Cascade)
 
   @@index([urlId])

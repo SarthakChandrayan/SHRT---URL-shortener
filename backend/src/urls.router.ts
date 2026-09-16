@@ -48,6 +48,7 @@ urlsRouter.get("/", requireAuth, async (req, res, next) => {
             browser: true,
             os: true,
             referrer: true,
+            country: true,
           },
           orderBy: { clickedAt: "desc" },
         },

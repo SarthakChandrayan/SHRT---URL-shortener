@@ -18,6 +18,7 @@ export type UrlAnalytics = {
   browsers: ClickBreakdown[]
   operatingSystems: ClickBreakdown[]
   referrers: ClickBreakdown[]
+  countries: ClickBreakdown[]
 }
 
 export type UrlStats = CreatedUrl & {
@@ -214,7 +215,8 @@ function isUrlAnalytics(value: unknown): value is UrlAnalytics {
     isBreakdownList(record.devices) &&
     isBreakdownList(record.browsers) &&
     isBreakdownList(record.operatingSystems) &&
-    isBreakdownList(record.referrers)
+    isBreakdownList(record.referrers) &&
+    isBreakdownList(record.countries)
   )
 }
 
