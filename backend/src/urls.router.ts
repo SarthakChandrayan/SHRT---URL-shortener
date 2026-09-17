@@ -1,7 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { Router } from "express";
 import { requireAuth } from "./auth.js";
-import { summarizeClicks } from "./click-analytics.js";
+import type { ClickBreakdown } from "./click-analytics.js";
 import { sendError } from "./errors.js";
 import { parseExpiresAt } from "./expires-at.js";
 import { parseOriginalUrl } from "./original-url.js";
@@ -30,42 +30,7 @@ urlsRouter.get("/", requireAuth, async (req, res, next) => {
       return;
     }
 
-    const urls = await prisma.url.findMany({
-      where: { userId },
-      select: {
-        id: true,
-        originalUrl: true,
-        shortCode: true,
-        createdAt: true,
-        expiresAt: true,
-        _count: {
-          select: { clicks: true },
-        },
-        clicks: {
-          select: {
-            clickedAt: true,
-            deviceType: true,
-            browser: true,
-            os: true,
-            referrer: true,
-            country: true,
-          },
-          orderBy: { clickedAt: "desc" },
-        },
-      },
-      orderBy: { createdAt: "desc" },
-    });
-
-    const payload = urls.map((url) => ({
-      id: url.id,
-      originalUrl: url.originalUrl,
-      shortCode: url.shortCode,
-      createdAt: url.createdAt,
-      expiresAt: url.expiresAt,
-      clickCount: url._count.clicks,
-      lastClickedAt: url.clicks[0]?.clickedAt ?? null,
-      analytics: summarizeClicks(url.clicks),
-    }));
+    const payload = await listOwnedUrlStats(userId);
 
     setCachedUrlList(userId, payload);
     res.set("Cache-Control", "no-store");
@@ -156,6 +121,173 @@ urlsRouter.patch("/:id", requireAuth, async (req, res, next) => {
     next(error);
   }
 });
+
+type UrlStatsRow = {
+  id: string;
+  originalUrl: string;
+  shortCode: string;
+  createdAt: Date;
+  expiresAt: Date | null;
+  clickCount: number;
+  lastClickedAt: Date | null;
+  devices: ClickBreakdown[] | null;
+  browsers: ClickBreakdown[] | null;
+  operatingSystems: ClickBreakdown[] | null;
+  referrers: ClickBreakdown[] | null;
+  countries: ClickBreakdown[] | null;
+};
+
+async function listOwnedUrlStats(userId: string) {
+  const urls = await prisma.$queryRaw<UrlStatsRow[]>(Prisma.sql`
+    WITH user_urls AS (
+      SELECT
+        id,
+        "originalUrl",
+        "shortCode",
+        "createdAt",
+        "expiresAt"
+      FROM "Url"
+      WHERE "userId" = ${userId}
+    ),
+    click_stats AS (
+      SELECT
+        "urlId",
+        COUNT(*)::int AS "clickCount",
+        MAX("clickedAt") AS "lastClickedAt"
+      FROM "Click"
+      WHERE "urlId" IN (SELECT id FROM user_urls)
+      GROUP BY "urlId"
+    ),
+    devices AS (
+      SELECT
+        "urlId",
+        json_agg(
+          json_build_object('label', label, 'count', count)
+          ORDER BY count DESC, lower(label), label
+        ) AS devices
+      FROM (
+        SELECT
+          "urlId",
+          "deviceType" AS label,
+          COUNT(*)::int AS count
+        FROM "Click"
+        WHERE "urlId" IN (SELECT id FROM user_urls)
+        GROUP BY "urlId", "deviceType"
+      ) device_counts
+      GROUP BY "urlId"
+    ),
+    browsers AS (
+      SELECT
+        "urlId",
+        json_agg(
+          json_build_object('label', label, 'count', count)
+          ORDER BY count DESC, lower(label), label
+        ) AS browsers
+      FROM (
+        SELECT
+          "urlId",
+          browser AS label,
+          COUNT(*)::int AS count
+        FROM "Click"
+        WHERE "urlId" IN (SELECT id FROM user_urls)
+        GROUP BY "urlId", browser
+      ) browser_counts
+      GROUP BY "urlId"
+    ),
+    operating_systems AS (
+      SELECT
+        "urlId",
+        json_agg(
+          json_build_object('label', label, 'count', count)
+          ORDER BY count DESC, lower(label), label
+        ) AS "operatingSystems"
+      FROM (
+        SELECT
+          "urlId",
+          os AS label,
+          COUNT(*)::int AS count
+        FROM "Click"
+        WHERE "urlId" IN (SELECT id FROM user_urls)
+        GROUP BY "urlId", os
+      ) os_counts
+      GROUP BY "urlId"
+    ),
+    referrers AS (
+      SELECT
+        "urlId",
+        json_agg(
+          json_build_object('label', label, 'count', count)
+          ORDER BY count DESC, lower(label), label
+        ) AS referrers
+      FROM (
+        SELECT
+          "urlId",
+          referrer AS label,
+          COUNT(*)::int AS count
+        FROM "Click"
+        WHERE "urlId" IN (SELECT id FROM user_urls)
+        GROUP BY "urlId", referrer
+      ) referrer_counts
+      GROUP BY "urlId"
+    ),
+    countries AS (
+      SELECT
+        "urlId",
+        json_agg(
+          json_build_object('label', label, 'count', count)
+          ORDER BY count DESC, lower(label), label
+        ) AS countries
+      FROM (
+        SELECT
+          "urlId",
+          country AS label,
+          COUNT(*)::int AS count
+        FROM "Click"
+        WHERE "urlId" IN (SELECT id FROM user_urls)
+        GROUP BY "urlId", country
+      ) country_counts
+      GROUP BY "urlId"
+    )
+    SELECT
+      u.id,
+      u."originalUrl",
+      u."shortCode",
+      u."createdAt",
+      u."expiresAt",
+      COALESCE(cs."clickCount", 0) AS "clickCount",
+      cs."lastClickedAt",
+      COALESCE(d.devices, '[]'::json) AS devices,
+      COALESCE(b.browsers, '[]'::json) AS browsers,
+      COALESCE(os."operatingSystems", '[]'::json) AS "operatingSystems",
+      COALESCE(r.referrers, '[]'::json) AS referrers,
+      COALESCE(c.countries, '[]'::json) AS countries
+    FROM user_urls u
+    LEFT JOIN click_stats cs ON cs."urlId" = u.id
+    LEFT JOIN devices d ON d."urlId" = u.id
+    LEFT JOIN browsers b ON b."urlId" = u.id
+    LEFT JOIN operating_systems os ON os."urlId" = u.id
+    LEFT JOIN referrers r ON r."urlId" = u.id
+    LEFT JOIN countries c ON c."urlId" = u.id
+    ORDER BY u."createdAt" DESC
+  `);
+
+  return urls.map((url) => ({
+    id: url.id,
+    originalUrl: url.originalUrl,
+    shortCode: url.shortCode,
+    createdAt: url.createdAt,
+    expiresAt: url.expiresAt,
+    clickCount: Number(url.clickCount),
+    lastClickedAt: url.lastClickedAt,
+    analytics: {
+      devices: url.devices ?? [],
+      browsers: url.browsers ?? [],
+      operatingSystems: url.operatingSystems ?? [],
+      referrers: url.referrers ?? [],
+      countries: url.countries ?? [],
+    },
+  }));
+}
 
 async function createUrl(
   originalUrl: string,
