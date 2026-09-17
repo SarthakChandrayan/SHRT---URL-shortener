@@ -81,17 +81,31 @@ export async function createShortUrl(originalUrl: string): Promise<CreatedUrl> {
   return payload
 }
 
-export async function listUrls(): Promise<UrlStats[]> {
-  const payload = await requestJson('/api/urls', {
-    cache: 'no-store',
-    headers: await authHeader(),
-  })
+let listUrlsInflight: Promise<UrlStats[]> | null = null
 
-  if (!Array.isArray(payload) || !payload.every(isUrlStats)) {
-    throw new ApiError('Unexpected response from the server')
+export function listUrls(): Promise<UrlStats[]> {
+  if (listUrlsInflight) {
+    return listUrlsInflight
   }
 
-  return payload
+  listUrlsInflight = (async () => {
+    try {
+      const payload = await requestJson('/api/urls', {
+        cache: 'no-store',
+        headers: await authHeader(),
+      })
+
+      if (!Array.isArray(payload) || !payload.every(isUrlStats)) {
+        throw new ApiError('Unexpected response from the server')
+      }
+
+      return payload
+    } finally {
+      listUrlsInflight = null
+    }
+  })()
+
+  return listUrlsInflight
 }
 
 export async function updateUrlExpiration(

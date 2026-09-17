@@ -31,23 +31,28 @@ export async function redirectToOriginalUrl(
     }
 
     if (!req.skipClickTracking) {
-      const analytics = await parseClickRequest(
-        req.get("user-agent"),
-        req.get("referer"),
-        req.ip ?? req.socket.remoteAddress,
-        (name) => req.get(name),
-      );
+      try {
+        const analytics = await parseClickRequest(
+          req.get("user-agent"),
+          req.get("referer"),
+          req.ip ?? req.socket.remoteAddress,
+          (name) => req.get(name),
+        );
 
-      await prisma.click.create({
-        data: {
-          urlId: url.id,
-          deviceType: analytics.deviceType,
-          browser: analytics.browser,
-          os: analytics.os,
-          referrer: analytics.referrer,
-          country: analytics.country,
-        },
-      });
+        await prisma.click.create({
+          data: {
+            urlId: url.id,
+            deviceType: analytics.deviceType,
+            browser: analytics.browser,
+            os: analytics.os,
+            referrer: analytics.referrer,
+            country: analytics.country,
+          },
+        });
+      } catch (error) {
+        const detail = error instanceof Error ? error.name : "unknown";
+        console.error(`Failed to record click for ${url.shortCode}: ${detail}`);
+      }
     }
 
     res.redirect(302, url.originalUrl);
