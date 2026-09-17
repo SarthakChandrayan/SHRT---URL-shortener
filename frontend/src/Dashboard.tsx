@@ -294,28 +294,26 @@ export function Dashboard({ onCreate }: DashboardProps) {
                       </p>
                       {url.clickCount > 0 ? (
                         <div className="link-analytics">
-                          <p>
-                            <span className="analytics-label">Device</span>
-                            <Breakdown items={url.analytics.devices} />
-                          </p>
-                          <p>
-                            <span className="analytics-label">Browser</span>
-                            <Breakdown items={url.analytics.browsers} />
-                          </p>
-                          <p>
-                            <span className="analytics-label">OS</span>
-                            <Breakdown items={url.analytics.operatingSystems} />
-                          </p>
-                          <p>
-                            <span className="analytics-label">From</span>
-                            <Breakdown items={url.analytics.referrers} />
-                          </p>
-                          {url.analytics.countries.length > 0 ? (
-                            <p>
-                              <span className="analytics-label">Country</span>
-                              <Breakdown items={url.analytics.countries} />
-                            </p>
-                          ) : null}
+                          <AnalyticsRow
+                            label="Device"
+                            items={url.analytics.devices}
+                          />
+                          <AnalyticsRow
+                            label="Browser"
+                            items={url.analytics.browsers}
+                          />
+                          <AnalyticsRow
+                            label="OS"
+                            items={url.analytics.operatingSystems}
+                          />
+                          <AnalyticsRow
+                            label="From"
+                            items={url.analytics.referrers}
+                          />
+                          <AnalyticsRow
+                            label="Country"
+                            items={url.analytics.countries}
+                          />
                         </div>
                       ) : (
                         <p className="status">No clicks yet.</p>
@@ -380,20 +378,55 @@ export function Dashboard({ onCreate }: DashboardProps) {
   )
 }
 
+function AnalyticsRow({
+  label,
+  items,
+}: {
+  label: string
+  items: { label: string; count: number }[]
+}) {
+  if (items.length === 0) {
+    return null
+  }
+
+  return (
+    <p>
+      <span className="analytics-label">{label}</span>
+      <Breakdown items={items} />
+    </p>
+  )
+}
+
+function displayLabel(label: string): string {
+  if (label === 'unknown') {
+    return 'Unidentified'
+  }
+
+  if (label === 'local') {
+    return 'This device'
+  }
+
+  if (label === 'direct') {
+    return 'Direct'
+  }
+
+  if (label === 'desktop' || label === 'mobile' || label === 'tablet') {
+    return label[0].toUpperCase() + label.slice(1)
+  }
+
+  return label
+}
+
 function Breakdown({
   items,
 }: {
   items: { label: string; count: number }[]
 }) {
-  if (items.length === 0) {
-    return '—'
-  }
-
   return (
     <span className="analytics-items">
       {items.map((item) => (
         <span key={item.label} className="analytics-item">
-          <span className="analytics-item-label">{item.label}</span>
+          <span className="analytics-item-label">{displayLabel(item.label)}</span>
           <span className="analytics-item-count">
             {item.count} {item.count === 1 ? 'click' : 'clicks'}
           </span>

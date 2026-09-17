@@ -75,11 +75,7 @@ export function summarizeClicks(
     browsers: breakdown(clicks.map((click) => click.browser)),
     operatingSystems: breakdown(clicks.map((click) => click.os)),
     referrers: breakdown(clicks.map((click) => click.referrer)),
-    countries: breakdown(
-      clicks
-        .map((click) => click.country)
-        .filter((country) => country !== "unknown" && country !== "local"),
-    ),
+    countries: breakdown(clicks.map((click) => click.country)),
   };
 }
 
