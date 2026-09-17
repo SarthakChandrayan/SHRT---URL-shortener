@@ -13,25 +13,20 @@ export function ProfileOverlay({ open, onClose }: ProfileOverlayProps) {
   }
 
   return (
-    <div className="overlay" role="dialog" aria-modal="true" aria-label="Profile">
+    <div className="overlay" role="dialog" aria-modal="true" aria-labelledby="profile-title">
       <button
         className="overlay-backdrop"
         type="button"
         aria-label="Close"
         onClick={onClose}
       />
-      <div className="overlay-panel console is-armed">
-        <div className="console-frame" aria-hidden="true">
-          <span />
-          <span />
-          <span />
-          <span />
-        </div>
+      <div className="overlay-panel">
         <button className="overlay-close" type="button" onClick={onClose} aria-label="Close">
           ×
         </button>
-        <div className="console-label">My profile</div>
-
+        <h2 id="profile-title" className="auth-title">
+          Your profile
+        </h2>
         <div className="profile-identity">
           {user.name ? <p className="profile-name">{user.name}</p> : null}
           <p className="profile-email">{user.email}</p>
