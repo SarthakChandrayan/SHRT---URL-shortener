@@ -155,7 +155,7 @@ export function Dashboard({ onCreate }: DashboardProps) {
   if (status !== 'authenticated') {
     return (
       <div className="dash">
-        <div className="dash-head">
+        <div className="dash-head dash-head-guest">
           <div>
             <h1 className="dash-title">Your links</h1>
             <p className="dash-lede">
@@ -171,6 +171,7 @@ export function Dashboard({ onCreate }: DashboardProps) {
             Sign in
           </button>
         </div>
+        <GuestPreview onSignIn={() => setAuthOpen(true)} />
         <AuthOverlay
           open={authOpen}
           message="Sign in to see your links."
@@ -375,6 +376,98 @@ export function Dashboard({ onCreate }: DashboardProps) {
         )}
       </section>
     </div>
+  )
+}
+
+type PreviewLink = {
+  code: string
+  original: string
+  clicks: number
+  lastClick: string
+  open?: boolean
+  devices?: { label: string; count: number }[]
+  countries?: { label: string; count: number }[]
+  referrers?: { label: string; count: number }[]
+}
+
+const PREVIEW_LINKS: PreviewLink[] = [
+  {
+    code: 'docs',
+    original: 'https://example.com/getting-started',
+    clicks: 48,
+    lastClick: '2 hours ago',
+    open: true,
+    devices: [
+      { label: 'desktop', count: 31 },
+      { label: 'mobile', count: 17 },
+    ],
+    countries: [
+      { label: 'India', count: 29 },
+      { label: 'United States', count: 12 },
+      { label: 'Germany', count: 7 },
+    ],
+    referrers: [
+      { label: 'direct', count: 22 },
+      { label: 'twitter.com', count: 16 },
+      { label: 'google.com', count: 10 },
+    ],
+  },
+  {
+    code: 'launch',
+    original: 'https://example.com/announcement',
+    clicks: 12,
+    lastClick: 'yesterday',
+  },
+  {
+    code: 'bio',
+    original: 'https://example.com/about',
+    clicks: 3,
+    lastClick: '4 days ago',
+  },
+]
+
+function GuestPreview({ onSignIn }: { onSignIn: () => void }) {
+  return (
+    <section className="dash-panel dash-preview">
+      <p className="dash-preview-tag">Example</p>
+      <ul className="link-list">
+        {PREVIEW_LINKS.map((link) => {
+          const shortUrl = getShortUrl(link.code)
+
+          return (
+            <li key={link.code} className={`link-card${link.open ? ' is-open' : ''}`}>
+              <div className="link-row">
+                <div className="link-main">
+                  <span className="link-short">{shortUrl}</span>
+                  <p className="original" title={link.original}>
+                    {link.original}
+                  </p>
+                </div>
+                <div className="link-aside">
+                  <span className="click-count">
+                    {link.clicks} {link.clicks === 1 ? 'click' : 'clicks'}
+                  </span>
+                  <span className="text-action">{link.open ? 'Hide' : 'Details'}</span>
+                </div>
+              </div>
+              {link.open ? (
+                <div className="link-details">
+                  <p className="link-detail-meta">Last click {link.lastClick} · Never expires</p>
+                  <div className="link-analytics">
+                    <AnalyticsRow label="Device" items={link.devices ?? []} />
+                    <AnalyticsRow label="From" items={link.referrers ?? []} />
+                    <AnalyticsRow label="Country" items={link.countries ?? []} />
+                  </div>
+                </div>
+              ) : null}
+            </li>
+          )
+        })}
+      </ul>
+      <button className="dash-preview-cover" type="button" onClick={onSignIn}>
+        Sign in to see your links
+      </button>
+    </section>
   )
 }
 

@@ -1,7 +1,8 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { useAuth } from './AuthContext.tsx'
 
 type AuthMode = 'signup' | 'signin'
+type AuthStep = 'credentials' | 'verify'
 
 type AuthOverlayProps = {
   open: boolean
@@ -9,34 +10,53 @@ type AuthOverlayProps = {
   onClose: () => void
 }
 
-export function AuthOverlay({ open, message, onClose }: AuthOverlayProps) {
-  const { signUpWithEmail, signInWithEmail, signInWithGoogle } = useAuth()
+export function AuthOverlay({ open, onClose }: AuthOverlayProps) {
+  const {
+    signUpWithEmail,
+    signInWithEmail,
+    verifyEmailOtp,
+    resendVerificationEmail,
+    signInWithGoogle,
+  } = useAuth()
   const [mode, setMode] = useState<AuthMode>('signup')
+  const [step, setStep] = useState<AuthStep>('credentials')
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [code, setCode] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+
+  useEffect(() => {
+    if (open) {
+      return
+    }
+
+    setName('')
+    setEmail('')
+    setPassword('')
+    setCode('')
+    setError(null)
+    setNotice(null)
+    setSubmitting(false)
+    setStep('credentials')
+    setMode('signup')
+  }, [open])
 
   if (!open) {
     return null
   }
 
-  function reset() {
-    setName('')
-    setEmail('')
-    setPassword('')
-    setError(null)
-    setSubmitting(false)
-  }
-
   function handleClose() {
-    reset()
     onClose()
   }
 
   function switchMode(next: AuthMode) {
     setError(null)
+    setNotice(null)
+    setCode('')
+    setStep('credentials')
     setMode(next)
   }
 
@@ -49,16 +69,73 @@ export function AuthOverlay({ open, message, onClose }: AuthOverlayProps) {
 
     setSubmitting(true)
     setError(null)
+    setNotice(null)
 
     const result =
       mode === 'signup'
         ? await signUpWithEmail(name, email, password)
         : await signInWithEmail(email, password)
 
-    if (result) {
-      setError(result)
+    if (result.kind === 'needs-verification') {
+      setStep('verify')
       setSubmitting(false)
       return
+    }
+
+    if (result.kind === 'error') {
+      setError(result.message)
+      setSubmitting(false)
+      return
+    }
+
+    setSubmitting(false)
+  }
+
+  async function handleVerify(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+
+    if (submitting) {
+      return
+    }
+
+    setSubmitting(true)
+    setError(null)
+    setNotice(null)
+
+    const result = await verifyEmailOtp(email, code)
+
+    if (result.kind === 'error') {
+      setError(result.message)
+      setSubmitting(false)
+      return
+    }
+
+    if (result.kind === 'verified') {
+      setMode('signin')
+      setStep('credentials')
+      setCode('')
+      setNotice('Email verified. Sign in to continue.')
+    }
+
+    setSubmitting(false)
+  }
+
+  async function handleResend() {
+    if (submitting) {
+      return
+    }
+
+    setSubmitting(true)
+    setError(null)
+    setNotice(null)
+
+    const result = await resendVerificationEmail(email)
+
+    if (result) {
+      setError(result)
+    } else {
+      setNotice('A new code is on its way.')
+      setCode('')
     }
 
     setSubmitting(false)
@@ -71,6 +148,7 @@ export function AuthOverlay({ open, message, onClose }: AuthOverlayProps) {
 
     setSubmitting(true)
     setError(null)
+    setNotice(null)
 
     const result = await signInWithGoogle()
 
@@ -80,12 +158,92 @@ export function AuthOverlay({ open, message, onClose }: AuthOverlayProps) {
     }
   }
 
+  if (step === 'verify') {
+    return (
+      <div className="overlay" role="dialog" aria-modal="true" aria-labelledby="auth-title">
+        <button
+          className="overlay-backdrop"
+          type="button"
+          aria-label="Close"
+          onClick={handleClose}
+        />
+        <div className="overlay-panel">
+          <div className="overlay-head">
+            <h2 id="auth-title" className="auth-title">
+              Check your email
+            </h2>
+            <button className="overlay-close" type="button" onClick={handleClose} aria-label="Close">
+              ×
+            </button>
+          </div>
+
+          <p className="auth-copy">
+            Enter the 6-digit code we sent to <span className="auth-email">{email}</span>.
+          </p>
+
+          <form className="auth-form" onSubmit={(event) => void handleVerify(event)}>
+            <div className="auth-field">
+              <label className="auth-field-label" htmlFor="auth-otp">
+                Code
+              </label>
+              <input
+                id="auth-otp"
+                className="field auth-otp"
+                type="text"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                placeholder="000000"
+                value={code}
+                required
+                minLength={6}
+                maxLength={6}
+                disabled={submitting}
+                onChange={(event) => setCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
+              />
+            </div>
+            <button className="button button-primary" type="submit" disabled={submitting}>
+              {submitting ? 'Please wait…' : 'Verify email'}
+            </button>
+          </form>
+
+          <p className="auth-verify-actions">
+            <button
+              className="link-button"
+              type="button"
+              disabled={submitting}
+              onClick={() => {
+                void handleResend()
+              }}
+            >
+              Resend code
+            </button>
+            <button
+              className="link-button"
+              type="button"
+              disabled={submitting}
+              onClick={() => {
+                setStep('credentials')
+                setCode('')
+                setError(null)
+                setNotice(null)
+              }}
+            >
+              Use a different email
+            </button>
+          </p>
+
+          {notice ? <p className="auth-notice">{notice}</p> : null}
+          {error ? <p className="status status-error auth-error">{error}</p> : null}
+        </div>
+      </div>
+    )
+  }
+
   const heading = mode === 'signup' ? 'Create an account' : 'Welcome back'
   const subtitle =
-    message ??
-    (mode === 'signup'
+    mode === 'signup'
       ? 'Save your short links and see how they get used.'
-      : 'Sign in to manage the links you\'ve created.')
+      : 'Sign in to manage the links you\'ve created.'
 
   return (
     <div className="overlay" role="dialog" aria-modal="true" aria-labelledby="auth-title">
@@ -96,9 +254,14 @@ export function AuthOverlay({ open, message, onClose }: AuthOverlayProps) {
         onClick={handleClose}
       />
       <div className="overlay-panel">
-        <button className="overlay-close" type="button" onClick={handleClose} aria-label="Close">
-          ×
-        </button>
+        <div className="overlay-head">
+          <h2 id="auth-title" className="auth-title">
+            {heading}
+          </h2>
+          <button className="overlay-close" type="button" onClick={handleClose} aria-label="Close">
+            ×
+          </button>
+        </div>
 
         <div className="auth-tabs" role="tablist" aria-label="Account">
           <button
@@ -121,9 +284,6 @@ export function AuthOverlay({ open, message, onClose }: AuthOverlayProps) {
           </button>
         </div>
 
-        <h2 id="auth-title" className="auth-title">
-          {heading}
-        </h2>
         <p className="auth-copy">{subtitle}</p>
 
         <button
@@ -152,7 +312,7 @@ export function AuthOverlay({ open, message, onClose }: AuthOverlayProps) {
                 id="auth-name"
                 className="field"
                 type="text"
-                autoComplete="name"
+                autoComplete="off"
                 placeholder="Your name"
                 value={name}
                 disabled={submitting}
@@ -202,6 +362,7 @@ export function AuthOverlay({ open, message, onClose }: AuthOverlayProps) {
           </button>
         </form>
 
+        {notice ? <p className="auth-notice">{notice}</p> : null}
         {error ? <p className="status status-error auth-error">{error}</p> : null}
       </div>
     </div>

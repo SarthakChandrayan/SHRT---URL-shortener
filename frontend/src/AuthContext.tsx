@@ -14,6 +14,16 @@ export type AuthUser = {
   name: string | null
 }
 
+export type EmailAuthResult =
+  | { kind: 'ok' }
+  | { kind: 'needs-verification' }
+  | { kind: 'error'; message: string }
+
+export type VerifyEmailResult =
+  | { kind: 'signed-in' }
+  | { kind: 'verified' }
+  | { kind: 'error'; message: string }
+
 type AuthStatus = 'loading' | 'authenticated' | 'unauthenticated'
 
 type AuthContextValue = {
@@ -23,13 +33,33 @@ type AuthContextValue = {
     name: string,
     email: string,
     password: string,
-  ) => Promise<string | null>
-  signInWithEmail: (email: string, password: string) => Promise<string | null>
+  ) => Promise<EmailAuthResult>
+  signInWithEmail: (email: string, password: string) => Promise<EmailAuthResult>
+  verifyEmailOtp: (email: string, otp: string) => Promise<VerifyEmailResult>
+  resendVerificationEmail: (email: string) => Promise<string | null>
   signInWithGoogle: () => Promise<string | null>
   signOut: () => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
+
+function errorMessage(error: { message?: string } | null | undefined, fallback: string) {
+  return error?.message?.trim() || fallback
+}
+
+function isUnverifiedEmailError(error: { code?: string; message?: string } | null | undefined) {
+  if (!error) {
+    return false
+  }
+
+  const code = error.code?.toUpperCase() ?? ''
+  const message = error.message?.toLowerCase() ?? ''
+  return (
+    code.includes('EMAIL_NOT_VERIFIED') ||
+    message.includes('email not verified') ||
+    message.includes('verify your email')
+  )
+}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AuthStatus>('loading')
@@ -45,13 +75,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           name: data.user.name ?? null,
         })
         setStatus('authenticated')
-      } else {
-        setUser(null)
-        setStatus('unauthenticated')
+        return true
       }
+      setUser(null)
+      setStatus('unauthenticated')
+      return false
     } catch {
       setUser(null)
       setStatus('unauthenticated')
+      return false
     }
   }, [])
 
@@ -59,7 +91,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     void refresh()
   }, [refresh])
 
-  async function signUpWithEmail(name: string, email: string, password: string) {
+  async function signUpWithEmail(
+    name: string,
+    email: string,
+    password: string,
+  ): Promise<EmailAuthResult> {
     try {
       const result = await authClient.signUp.email({
         name: name.trim() || email.split('@')[0] || 'User',
@@ -67,25 +103,59 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         password,
       })
       if (result.error) {
-        return result.error.message ?? 'Could not create your account'
+        return { kind: 'error', message: errorMessage(result.error, 'Could not create your account') }
       }
-      await refresh()
-      return null
+      if (result.data?.user?.emailVerified) {
+        await refresh()
+        return { kind: 'ok' }
+      }
+      return { kind: 'needs-verification' }
     } catch {
-      return 'Could not reach the sign-up service'
+      return { kind: 'error', message: 'Could not reach the sign-up service' }
     }
   }
 
-  async function signInWithEmail(email: string, password: string) {
+  async function signInWithEmail(email: string, password: string): Promise<EmailAuthResult> {
     try {
       const result = await authClient.signIn.email({ email, password })
       if (result.error) {
-        return result.error.message ?? 'Could not sign in'
+        if (isUnverifiedEmailError(result.error)) {
+          return { kind: 'needs-verification' }
+        }
+        return { kind: 'error', message: errorMessage(result.error, 'Could not sign in') }
       }
       await refresh()
+      return { kind: 'ok' }
+    } catch {
+      return { kind: 'error', message: 'Could not reach the sign-in service' }
+    }
+  }
+
+  async function verifyEmailOtp(email: string, otp: string): Promise<VerifyEmailResult> {
+    try {
+      const result = await authClient.emailOtp.verifyEmail({ email, otp })
+      if (result.error) {
+        return { kind: 'error', message: errorMessage(result.error, 'That code did not work') }
+      }
+      const signedIn = await refresh()
+      return signedIn ? { kind: 'signed-in' } : { kind: 'verified' }
+    } catch {
+      return { kind: 'error', message: 'Could not verify that code' }
+    }
+  }
+
+  async function resendVerificationEmail(email: string) {
+    try {
+      const result = await authClient.sendVerificationEmail({
+        email,
+        callbackURL: window.location.origin + '/',
+      })
+      if (result.error) {
+        return errorMessage(result.error, 'Could not send a new code')
+      }
       return null
     } catch {
-      return 'Could not reach the sign-in service'
+      return 'Could not send a new code'
     }
   }
 
@@ -118,6 +188,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         user,
         signUpWithEmail,
         signInWithEmail,
+        verifyEmailOtp,
+        resendVerificationEmail,
         signInWithGoogle,
         signOut,
       }}

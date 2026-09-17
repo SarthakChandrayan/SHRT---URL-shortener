@@ -21,12 +21,14 @@ export function ProfileOverlay({ open, onClose }: ProfileOverlayProps) {
         onClick={onClose}
       />
       <div className="overlay-panel">
-        <button className="overlay-close" type="button" onClick={onClose} aria-label="Close">
-          ×
-        </button>
-        <h2 id="profile-title" className="auth-title">
-          Your profile
-        </h2>
+        <div className="overlay-head">
+          <h2 id="profile-title" className="auth-title">
+            Your profile
+          </h2>
+          <button className="overlay-close" type="button" onClick={onClose} aria-label="Close">
+            ×
+          </button>
+        </div>
         <div className="profile-identity">
           {user.name ? <p className="profile-name">{user.name}</p> : null}
           <p className="profile-email">{user.email}</p>
