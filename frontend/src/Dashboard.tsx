@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState, lazy, Suspense } from 'react'
 import { ApiError, getShortUrl, listUrls, updateUrlExpiration, type UrlStats } from './api.ts'
 import { AuthOverlay } from './AuthOverlay.tsx'
 import { useAuth } from './AuthContext.tsx'
 import { copyText } from './copy.ts'
 import { parseExpiresInput } from './validate.ts'
+
+const ClicksOverTime = lazy(() => import('./ClicksOverTime.tsx'))
 
 type LoadState =
   | { kind: 'loading' }
@@ -293,6 +295,16 @@ export function Dashboard({ onCreate }: DashboardProps) {
                           ? ` · ${expired ? 'Expired' : 'Expires'} ${formatWhen(url.expiresAt)}`
                           : ' · Never expires'}
                       </p>
+                      <Suspense
+                        fallback={
+                          <section className="clicks-over-time" aria-live="polite">
+                            <p className="clicks-over-time-kicker">Last 7 days</p>
+                            <p className="status">Loading daily clicks…</p>
+                          </section>
+                        }
+                      >
+                        <ClicksOverTime urlId={url.id} />
+                      </Suspense>
                       {url.clickCount > 0 ? (
                         <div className="link-analytics">
                           <AnalyticsRow

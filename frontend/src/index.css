@@ -771,6 +771,72 @@ input {
   color: var(--muted);
 }
 
+.clicks-over-time {
+  margin: 0 0 14px;
+  min-width: 0;
+}
+
+.clicks-over-time-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px 12px;
+  margin-bottom: 8px;
+}
+
+.clicks-over-time-kicker,
+.clicks-over-time-range {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.clicks-over-time-kicker {
+  color: var(--accent-2);
+}
+
+.clicks-over-time-range {
+  color: var(--muted);
+}
+
+.clicks-over-time-chart {
+  width: 100%;
+  height: 168px;
+  min-width: 0;
+}
+
+.clicks-over-time .status {
+  margin: 8px 0 0;
+}
+
+.clicks-over-time .text-action {
+  margin-top: 8px;
+}
+
+.clicks-over-time-tooltip {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--fg);
+  background: #0a1218;
+  border: 1px solid var(--line);
+}
+
+.clicks-over-time-tooltip span:last-child {
+  color: var(--accent-2);
+}
+
+.clicks-over-time .recharts-surface:focus {
+  outline: none;
+}
+
 .link-analytics {
   display: grid;
   gap: 6px;

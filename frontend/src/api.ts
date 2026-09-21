@@ -27,6 +27,17 @@ export type UrlStats = CreatedUrl & {
   analytics: UrlAnalytics
 }
 
+export type DailyClicks = {
+  date: string
+  clicks: number
+}
+
+export type UrlClicksOverTime = {
+  startDate: string
+  endDate: string
+  data: DailyClicks[]
+}
+
 export class ApiError extends Error {
   readonly status: number | null
 
@@ -108,6 +119,21 @@ export function listUrls(): Promise<UrlStats[]> {
   return listUrlsInflight
 }
 
+export async function getUrlAnalytics(id: string, init?: RequestInit): Promise<UrlClicksOverTime> {
+  const { headers, ...rest } = init ?? {}
+  const payload = await requestJson(`/api/urls/${encodeURIComponent(id)}/analytics`, {
+    cache: 'no-store',
+    ...rest,
+    headers: { ...(await authHeader()), ...headers },
+  })
+
+  if (!isUrlClicksOverTime(payload)) {
+    throw new ApiError('Unexpected response from the server')
+  }
+
+  return payload
+}
+
 export async function updateUrlExpiration(
   id: string,
   expiresAt: string | null,
@@ -135,7 +161,11 @@ async function requestJson(path: string, init?: RequestInit): Promise<unknown> {
 
   try {
     response = await fetch(apiUrl(path), init)
-  } catch {
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw error
+    }
+
     throw new ApiError('Could not reach the server. Check that the API is running.')
   }
 
@@ -231,6 +261,30 @@ function isUrlAnalytics(value: unknown): value is UrlAnalytics {
     isBreakdownList(record.operatingSystems) &&
     isBreakdownList(record.referrers) &&
     isBreakdownList(record.countries)
+  )
+}
+
+function isUrlClicksOverTime(value: unknown): value is UrlClicksOverTime {
+  if (value === null || typeof value !== 'object') {
+    return false
+  }
+
+  const record = value as Record<string, unknown>
+
+  return (
+    typeof record.startDate === 'string' &&
+    typeof record.endDate === 'string' &&
+    Array.isArray(record.data) &&
+    record.data.every(isDailyClicks)
+  )
+}
+
+function isDailyClicks(value: unknown): value is DailyClicks {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    typeof (value as DailyClicks).date === 'string' &&
+    typeof (value as DailyClicks).clicks === 'number'
   )
 }
 

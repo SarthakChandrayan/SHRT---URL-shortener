@@ -72,6 +72,49 @@ urlsRouter.post("/", createUrlLimiter, requireAuth, async (req, res, next) => {
   }
 });
 
+urlsRouter.get("/:id/analytics", requireAuth, async (req, res, next) => {
+  const id = req.params.id;
+
+  if (typeof id !== "string" || id.trim() === "") {
+    sendError(res, 404, "Short URL not found");
+    return;
+  }
+
+  const range = parseAnalyticsRange(req.query);
+
+  if (!range.ok) {
+    sendError(res, 400, range.error);
+    return;
+  }
+
+  try {
+    const existing = await prisma.url.findFirst({
+      where: { id, userId: req.userId },
+      select: { id: true },
+    });
+
+    if (!existing) {
+      sendError(res, 404, "Short URL not found");
+      return;
+    }
+
+    const data = await listUrlClicksByDay(
+      existing.id,
+      range.startDate,
+      range.endDate,
+    );
+
+    res.set("Cache-Control", "no-store");
+    res.json({
+      startDate: range.startDate,
+      endDate: range.endDate,
+      data,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 urlsRouter.patch("/:id", requireAuth, async (req, res, next) => {
   const id = req.params.id;
 
@@ -121,6 +164,150 @@ urlsRouter.patch("/:id", requireAuth, async (req, res, next) => {
     next(error);
   }
 });
+
+const ISO_DAY = /^(\d{4})-(\d{2})-(\d{2})$/;
+const DEFAULT_RANGE_DAYS = 7;
+const MAX_RANGE_DAYS = 90;
+
+type AnalyticsRange =
+  | { ok: true; startDate: string; endDate: string }
+  | { ok: false; error: string };
+
+function utcDayString(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+function parseIsoDay(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const match = ISO_DAY.exec(value.trim());
+
+  if (!match) {
+    return null;
+  }
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const utc = new Date(Date.UTC(year, month - 1, day));
+
+  if (
+    utc.getUTCFullYear() !== year ||
+    utc.getUTCMonth() !== month - 1 ||
+    utc.getUTCDate() !== day
+  ) {
+    return null;
+  }
+
+  return `${match[1]}-${match[2]}-${match[3]}`;
+}
+
+function addUtcDays(isoDay: string, days: number): string {
+  const [year, month, day] = isoDay.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  date.setUTCDate(date.getUTCDate() + days);
+  return utcDayString(date);
+}
+
+function inclusiveDayCount(startDate: string, endDate: string): number {
+  const start = Date.parse(`${startDate}T00:00:00.000Z`);
+  const end = Date.parse(`${endDate}T00:00:00.000Z`);
+  return Math.floor((end - start) / 86_400_000) + 1;
+}
+
+function parseAnalyticsRange(query: {
+  startDate?: unknown;
+  endDate?: unknown;
+}): AnalyticsRange {
+  if (Array.isArray(query.startDate) || Array.isArray(query.endDate)) {
+    return { ok: false, error: "startDate and endDate must be YYYY-MM-DD" };
+  }
+
+  const today = utcDayString(new Date());
+  let endDate: string;
+  let startDate: string;
+
+  if (query.endDate === undefined || query.endDate === "") {
+    endDate = today;
+  } else {
+    const parsed = parseIsoDay(query.endDate);
+
+    if (!parsed) {
+      return { ok: false, error: "endDate must be YYYY-MM-DD" };
+    }
+
+    endDate = parsed;
+  }
+
+  if (query.startDate === undefined || query.startDate === "") {
+    startDate = addUtcDays(endDate, -(DEFAULT_RANGE_DAYS - 1));
+  } else {
+    const parsed = parseIsoDay(query.startDate);
+
+    if (!parsed) {
+      return { ok: false, error: "startDate must be YYYY-MM-DD" };
+    }
+
+    startDate = parsed;
+  }
+
+  if (startDate > endDate) {
+    return { ok: false, error: "startDate must be on or before endDate" };
+  }
+
+  if (inclusiveDayCount(startDate, endDate) > MAX_RANGE_DAYS) {
+    return {
+      ok: false,
+      error: `Date range must be ${MAX_RANGE_DAYS} days or fewer`,
+    };
+  }
+
+  return { ok: true, startDate, endDate };
+}
+
+type DailyClickRow = {
+  date: string;
+  clicks: number;
+};
+
+async function listUrlClicksByDay(
+  urlId: string,
+  startDate: string,
+  endDate: string,
+): Promise<DailyClickRow[]> {
+  const rows = await prisma.$queryRaw<DailyClickRow[]>(Prisma.sql`
+    WITH days AS (
+      SELECT generate_series(
+        ${startDate}::date,
+        ${endDate}::date,
+        INTERVAL '1 day'
+      )::date AS date
+    ),
+    counts AS (
+      SELECT
+        "clickedAt"::date AS date,
+        COUNT(*)::int AS clicks
+      FROM "Click"
+      WHERE "urlId" = ${urlId}
+        AND "clickedAt" >= ${startDate}::date
+        AND "clickedAt" < (${endDate}::date + INTERVAL '1 day')
+      GROUP BY 1
+    )
+    SELECT
+      to_char(days.date, 'YYYY-MM-DD') AS date,
+      COALESCE(counts.clicks, 0)::int AS clicks
+    FROM days
+    LEFT JOIN counts ON counts.date = days.date
+    ORDER BY days.date
+  `);
+
+  return rows.map((row) => ({
+    date: row.date,
+    clicks: Number(row.clicks),
+  }));
+}
 
 type UrlStatsRow = {
   id: string;
