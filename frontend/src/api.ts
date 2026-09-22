@@ -76,7 +76,8 @@ function shortOrigin(): string {
     return 'http://localhost:3000'
   }
 
-  return ''
+  // Production links use this site. Vercel proxies /:shortCode to the backend.
+  return window.location.origin
 }
 
 export function getShortUrl(shortCode: string): string {
