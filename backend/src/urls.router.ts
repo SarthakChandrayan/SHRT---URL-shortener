@@ -98,17 +98,17 @@ urlsRouter.get("/:id/analytics", requireAuth, async (req, res, next) => {
       return;
     }
 
-    const data = await listUrlClicksByDay(
-      existing.id,
-      range.startDate,
-      range.endDate,
-    );
+    const [data, devices] = await Promise.all([
+      listUrlClicksByDay(existing.id, range.startDate, range.endDate),
+      listUrlClicksByDevice(existing.id, range.startDate, range.endDate),
+    ]);
 
     res.set("Cache-Control", "no-store");
     res.json({
       startDate: range.startDate,
       endDate: range.endDate,
       data,
+      devices,
     });
   } catch (error) {
     next(error);
@@ -305,6 +305,53 @@ async function listUrlClicksByDay(
 
   return rows.map((row) => ({
     date: row.date,
+    clicks: Number(row.clicks),
+  }));
+}
+
+type DeviceClickRow = {
+  deviceType: string;
+  clicks: number;
+};
+
+async function listUrlClicksByDevice(
+  urlId: string,
+  startDate: string,
+  endDate: string,
+): Promise<DeviceClickRow[]> {
+  const rows = await prisma.$queryRaw<DeviceClickRow[]>(Prisma.sql`
+    WITH categories AS (
+      SELECT unnest(ARRAY['desktop', 'mobile', 'tablet', 'unknown']) AS "deviceType"
+    ),
+    counts AS (
+      SELECT
+        CASE
+          WHEN "deviceType" IN ('desktop', 'mobile', 'tablet') THEN "deviceType"
+          ELSE 'unknown'
+        END AS "deviceType",
+        COUNT(*)::int AS clicks
+      FROM "Click"
+      WHERE "urlId" = ${urlId}
+        AND "clickedAt" >= ${startDate}::date
+        AND "clickedAt" < (${endDate}::date + INTERVAL '1 day')
+      GROUP BY 1
+    )
+    SELECT
+      categories."deviceType",
+      COALESCE(counts.clicks, 0)::int AS clicks
+    FROM categories
+    LEFT JOIN counts ON counts."deviceType" = categories."deviceType"
+    ORDER BY
+      CASE categories."deviceType"
+        WHEN 'desktop' THEN 0
+        WHEN 'mobile' THEN 1
+        WHEN 'tablet' THEN 2
+        ELSE 3
+      END
+  `);
+
+  return rows.map((row) => ({
+    deviceType: row.deviceType,
     clicks: Number(row.clicks),
   }));
 }

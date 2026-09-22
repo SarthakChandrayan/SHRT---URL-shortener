@@ -12,6 +12,7 @@ import {
   ApiError,
   getUrlAnalytics,
   type DailyClicks,
+  type DeviceClicks,
   type UrlClicksOverTime,
 } from './api.ts'
 
@@ -131,8 +132,57 @@ export function ClicksOverTime({ urlId }: ClicksOverTimeProps) {
       {total === 0 ? (
         <p className="status">No clicks in this period.</p>
       ) : null}
+      <DeviceBreakdown devices={state.series.devices} />
     </section>
   )
+}
+
+function DeviceBreakdown({ devices }: { devices: DeviceClicks[] }) {
+  const total = devices.reduce((sum, item) => sum + item.clicks, 0)
+
+  return (
+    <div className="device-breakdown">
+      <p className="clicks-over-time-kicker">Device</p>
+      <ul className="device-breakdown-list">
+        {devices.map((item) => {
+          const share = total > 0 ? (item.clicks / total) * 100 : 0
+
+          return (
+            <li key={item.deviceType} className="device-breakdown-row">
+              <span className="device-breakdown-label">
+                {formatDeviceLabel(item.deviceType)}
+              </span>
+              <span className="device-breakdown-track" aria-hidden="true">
+                <span
+                  className="device-breakdown-bar"
+                  style={{ width: `${share}%` }}
+                />
+              </span>
+              <span className="device-breakdown-count">
+                {item.clicks} {item.clicks === 1 ? 'click' : 'clicks'}
+              </span>
+            </li>
+          )
+        })}
+      </ul>
+    </div>
+  )
+}
+
+function formatDeviceLabel(deviceType: string): string {
+  if (deviceType === 'unknown') {
+    return 'Unidentified'
+  }
+
+  if (
+    deviceType === 'desktop' ||
+    deviceType === 'mobile' ||
+    deviceType === 'tablet'
+  ) {
+    return deviceType[0].toUpperCase() + deviceType.slice(1)
+  }
+
+  return deviceType
 }
 
 function DayTooltip({

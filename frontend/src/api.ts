@@ -32,10 +32,16 @@ export type DailyClicks = {
   clicks: number
 }
 
+export type DeviceClicks = {
+  deviceType: string
+  clicks: number
+}
+
 export type UrlClicksOverTime = {
   startDate: string
   endDate: string
   data: DailyClicks[]
+  devices: DeviceClicks[]
 }
 
 export class ApiError extends Error {
@@ -275,7 +281,9 @@ function isUrlClicksOverTime(value: unknown): value is UrlClicksOverTime {
     typeof record.startDate === 'string' &&
     typeof record.endDate === 'string' &&
     Array.isArray(record.data) &&
-    record.data.every(isDailyClicks)
+    record.data.every(isDailyClicks) &&
+    Array.isArray(record.devices) &&
+    record.devices.every(isDeviceClicks)
   )
 }
 
@@ -285,6 +293,15 @@ function isDailyClicks(value: unknown): value is DailyClicks {
     typeof value === 'object' &&
     typeof (value as DailyClicks).date === 'string' &&
     typeof (value as DailyClicks).clicks === 'number'
+  )
+}
+
+function isDeviceClicks(value: unknown): value is DeviceClicks {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    typeof (value as DeviceClicks).deviceType === 'string' &&
+    typeof (value as DeviceClicks).clicks === 'number'
   )
 }
 
