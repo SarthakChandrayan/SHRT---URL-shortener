@@ -228,7 +228,8 @@ function App() {
                   type="button"
                   onClick={() => setProfileOpen(true)}
                 >
-                  My profile
+                  <span className="auth-label-full">My profile</span>
+                  <span className="auth-label-short">Profile</span>
                 </button>
                 <button
                   className="button button-ghost"
