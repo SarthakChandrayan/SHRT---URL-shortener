@@ -695,6 +695,8 @@ input {
 }
 
 .link-card {
+  min-width: 0;
+  max-width: 100%;
   padding: 14px 0;
   border-top: 1px solid var(--line);
 }
@@ -709,11 +711,15 @@ input {
   align-items: center;
   justify-content: space-between;
   gap: 16px 24px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .link-main {
   min-width: 0;
+  max-width: 100%;
   flex: 1;
+  overflow: hidden;
 }
 
 .link-short {
@@ -1473,8 +1479,42 @@ input {
     margin-bottom: 14px;
   }
 
+  .dash,
+  .dash-panel,
+  .dash-preview,
+  .link-list,
+  .link-card,
+  .link-row,
+  .link-main,
+  .link-details,
+  .link-analytics,
+  .clicks-over-time,
+  .console,
+  .short-url,
+  .original {
+    min-width: 0;
+    max-width: 100%;
+  }
+
   .dash-panel {
+    overflow: hidden;
     padding: 4px 14px 12px;
+  }
+
+  .link-row,
+  .link-main,
+  .link-aside {
+    width: 100%;
+  }
+
+  .link-short,
+  .link-card .original {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .link-aside {
@@ -1484,16 +1524,43 @@ input {
   }
 
   .link-details {
-    overflow-x: auto;
+    overflow: hidden;
+  }
+
+  .link-detail-meta {
+    overflow-wrap: anywhere;
+  }
+
+  .link-analytics p {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+    max-width: 100%;
+  }
+
+  .analytics-items {
+    width: 100%;
+  }
+
+  .analytics-item {
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
 
   .device-breakdown-row {
-    grid-template-columns: 72px minmax(32px, 1fr) auto;
+    grid-template-columns: minmax(0, 72px) minmax(32px, 1fr) auto;
     gap: 8px;
   }
 
   .analytics-label {
-    width: 64px;
+    width: auto;
+  }
+
+  .short-url,
+  .original {
+    overflow-wrap: anywhere;
+    word-break: break-word;
   }
 
   .overlay {
