@@ -96,3 +96,42 @@ export async function getAccessToken(): Promise<string | null> {
 export function clearAccessToken() {
   cachedJwt = null
 }
+
+const OAUTH_ERROR_MESSAGES: Record<string, string> = {
+  account_not_linked:
+    'This email already has a SHRT account that was created with a password and never verified. Sign in with your email and password below. We’ll send a code to verify your email, and after that Continue with Google will work too.',
+  access_denied: 'Google sign-in was cancelled.',
+  email_not_found: 'Google didn’t share an email address for this account.',
+}
+
+/**
+ * Better Auth sends OAuth failures back as `?error=<code>` on the callback
+ * URL. Reads it, strips it from the address bar, and returns a readable
+ * message (or null when there's no error).
+ */
+let takenOAuthError: string | null | undefined
+
+export function takeOAuthError(): string | null {
+  // Idempotent: StrictMode calls state initializers twice, and the first
+  // call has already cleaned the URL.
+  if (takenOAuthError !== undefined) {
+    return takenOAuthError
+  }
+
+  const url = new URL(window.location.href)
+  const code = url.searchParams.get('error')
+
+  if (!code) {
+    takenOAuthError = null
+    return null
+  }
+
+  url.searchParams.delete('error')
+  url.searchParams.delete('error_description')
+  window.history.replaceState(window.history.state, '', url.pathname + url.search + url.hash)
+
+  takenOAuthError =
+    OAUTH_ERROR_MESSAGES[code.toLowerCase()] ??
+    `Google sign-in didn’t complete (${code.replaceAll('_', ' ')}). Try again, or use email and password.`
+  return takenOAuthError
+}

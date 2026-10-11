@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { takeOAuthError } from './auth.ts'
 import { AuthOverlay } from './AuthOverlay.tsx'
 import { useAuth } from './AuthContext.tsx'
 import { Dashboard } from './Dashboard.tsx'
@@ -28,7 +29,9 @@ function App() {
   const { status, user } = useAuth()
   const [screen, setScreen] = useState<Screen>(readScreen)
   const [busy, setBusy] = useState(false)
-  const [authOpen, setAuthOpen] = useState(false)
+  // Read once on load: a failed Google redirect lands back here with ?error=.
+  const [oauthError, setOAuthError] = useState(takeOAuthError)
+  const [authOpen, setAuthOpen] = useState(() => oauthError !== null)
   const [profileOpen, setProfileOpen] = useState(false)
 
   useEffect(() => {
@@ -159,10 +162,14 @@ function App() {
       </footer>
 
       <AuthOverlay
+        // Remount when the OAuth error is dismissed so the next open starts clean.
+        key={oauthError ? 'oauth-error' : 'auth'}
         open={authOpen}
+        oauthError={oauthError}
         onClose={() => {
           clearPending()
           setAuthOpen(false)
+          setOAuthError(null)
         }}
       />
       <ProfileOverlay

@@ -8,9 +8,11 @@ type AuthStep = 'credentials' | 'verify'
 type AuthOverlayProps = {
   open: boolean
   onClose: () => void
+  /** Error carried back from a failed Google redirect; opens on "Sign in". */
+  oauthError?: string | null
 }
 
-export function AuthOverlay({ open, onClose }: AuthOverlayProps) {
+export function AuthOverlay({ open, onClose, oauthError = null }: AuthOverlayProps) {
   const {
     signUpWithEmail,
     signInWithEmail,
@@ -18,13 +20,13 @@ export function AuthOverlay({ open, onClose }: AuthOverlayProps) {
     resendVerificationEmail,
     signInWithGoogle,
   } = useAuth()
-  const [mode, setMode] = useState<AuthMode>('signup')
+  const [mode, setMode] = useState<AuthMode>(oauthError ? 'signin' : 'signup')
   const [step, setStep] = useState<AuthStep>('credentials')
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [code, setCode] = useState('')
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(oauthError)
   const [notice, setNotice] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
 
