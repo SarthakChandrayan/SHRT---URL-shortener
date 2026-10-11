@@ -30,24 +30,25 @@ export function validateOriginalUrl(value: string): string | null {
   return null
 }
 
-export function parseExpiresInput(
-  value: string,
-): { error: string } | { expiresAt: string | null } {
-  const trimmed = value.trim()
+export const ALIAS_MIN_LENGTH = 3
+export const ALIAS_MAX_LENGTH = 32
 
-  if (!trimmed) {
-    return { expiresAt: null }
+// Keep in sync with backend/src/alias.ts. The server is the source of truth
+// (it also rejects reserved words); this just gives instant feedback.
+export function validateAlias(value: string): string | null {
+  const alias = value.trim()
+
+  if (!alias) {
+    return null
   }
 
-  const ms = Date.parse(trimmed)
-
-  if (Number.isNaN(ms)) {
-    return { error: 'Enter a valid expiration date' }
+  if (alias.length < ALIAS_MIN_LENGTH || alias.length > ALIAS_MAX_LENGTH) {
+    return `Alias must be ${ALIAS_MIN_LENGTH}–${ALIAS_MAX_LENGTH} characters`
   }
 
-  if (ms <= Date.now()) {
-    return { error: 'Expiration must be in the future' }
+  if (!/^[A-Za-z0-9_-]+$/.test(alias)) {
+    return 'Use letters, numbers, hyphens and underscores only'
   }
 
-  return { expiresAt: new Date(ms).toISOString() }
+  return null
 }

@@ -31,5 +31,5 @@ model Click {
   country    String   @default("unknown")
   url        Url      @relation(fields: [urlId], references: [id], onDelete: Cascade)
 
-  @@index([urlId])
+  @@index([urlId, clickedAt])
 }

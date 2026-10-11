@@ -1,9 +1,22 @@
-import { useCallback, useEffect, useState, lazy, Suspense } from 'react'
-import { ApiError, getShortUrl, listUrls, updateUrlExpiration, type UrlStats } from './api.ts'
-import { AuthOverlay } from './AuthOverlay.tsx'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
+import { getShortUrl, listUrls, type ClickBreakdown, type UrlStats } from './api.ts'
 import { useAuth } from './AuthContext.tsx'
 import { copyText } from './copy.ts'
-import { parseExpiresInput } from './validate.ts'
+import { displayHost, formatWhen, isExpired, plural, relativeTime } from './format.ts'
+import {
+  ChevronIcon,
+  CopyIcon,
+  EditIcon,
+  ExternalIcon,
+  PlusIcon,
+  QrIcon,
+  RefreshIcon,
+  SearchIcon,
+  TrashIcon,
+  CheckIcon,
+} from './icons.tsx'
+import { DeleteLinkModal, EditLinkModal, QrModal } from './LinkModals.tsx'
+import { useToast } from './Toast.tsx'
 
 const ClicksOverTime = lazy(() => import('./ClicksOverTime.tsx'))
 
@@ -12,39 +25,47 @@ type LoadState =
   | { kind: 'ready'; urls: UrlStats[] }
   | { kind: 'error'; message: string }
 
+type Filter = 'all' | 'active' | 'expired'
+type Sort = 'newest' | 'oldest' | 'clicks' | 'recent'
+
+type DialogState = { kind: 'edit' | 'delete' | 'qr'; link: UrlStats } | null
+
 type DashboardProps = {
   onCreate: () => void
+  onSignIn: () => void
 }
 
-export function Dashboard({ onCreate }: DashboardProps) {
+export function Dashboard({ onCreate, onSignIn }: DashboardProps) {
   const { status } = useAuth()
+  const toast = useToast()
   const [state, setState] = useState<LoadState>({ kind: 'loading' })
   const [refreshing, setRefreshing] = useState(false)
   const [copiedId, setCopiedId] = useState<string | null>(null)
-  const [authOpen, setAuthOpen] = useState(false)
   const [openId, setOpenId] = useState<string | null>(null)
-  const [drafts, setDrafts] = useState<Record<string, string>>({})
-  const [savingId, setSavingId] = useState<string | null>(null)
-  const [expireNotice, setExpireNotice] = useState<{
-    id: string
-    kind: 'error' | 'ok'
-    text: string
-  } | null>(null)
+  const [dialog, setDialog] = useState<DialogState>(null)
+  const [query, setQuery] = useState('')
+  const [filter, setFilter] = useState<Filter>('all')
+  const [sort, setSort] = useState<Sort>('newest')
 
   const load = useCallback(async () => {
     try {
       const urls = await listUrls()
       setState({ kind: 'ready', urls })
     } catch (error) {
-      setState({
-        kind: 'error',
-        message:
-          error instanceof ApiError || error instanceof Error
-            ? error.message
-            : 'Could not load click stats',
-      })
+      setState((current) =>
+        // Keep showing stale data on a failed background refresh.
+        current.kind === 'ready'
+          ? current
+          : {
+              kind: 'error',
+              message: error instanceof Error ? error.message : 'Could not load your links',
+            },
+      )
+      if (error instanceof Error) {
+        toast(error.message, 'error')
+      }
     }
-  }, [])
+  }, [toast])
 
   async function handleRefresh() {
     setRefreshing(true)
@@ -76,80 +97,66 @@ export function Dashboard({ onCreate }: DashboardProps) {
     return () => window.clearTimeout(timer)
   }, [copiedId])
 
-  useEffect(() => {
-    if (expireNotice?.kind !== 'ok') {
-      return
-    }
+  const urls = useMemo(() => (state.kind === 'ready' ? state.urls : []), [state])
 
-    const timer = window.setTimeout(() => setExpireNotice(null), 1600)
-    return () => window.clearTimeout(timer)
-  }, [expireNotice])
+  const visible = useMemo(() => {
+    const needle = query.trim().toLowerCase()
+
+    const filtered = urls.filter((url) => {
+      const expired = isExpired(url.expiresAt)
+      if (filter === 'active' && expired) {
+        return false
+      }
+      if (filter === 'expired' && !expired) {
+        return false
+      }
+      return (
+        !needle ||
+        url.shortCode.toLowerCase().includes(needle) ||
+        url.originalUrl.toLowerCase().includes(needle)
+      )
+    })
+
+    const time = (iso: string | null) => (iso ? Date.parse(iso) : 0)
+
+    return filtered.sort((a, b) => {
+      switch (sort) {
+        case 'oldest':
+          return time(a.createdAt) - time(b.createdAt)
+        case 'clicks':
+          return b.clickCount - a.clickCount || time(b.createdAt) - time(a.createdAt)
+        case 'recent':
+          return time(b.lastClickedAt) - time(a.lastClickedAt)
+        default:
+          return time(b.createdAt) - time(a.createdAt)
+      }
+    })
+  }, [urls, query, filter, sort])
 
   async function handleCopy(id: string, shortUrl: string) {
     try {
       await copyText(shortUrl)
       setCopiedId(id)
     } catch {
-      setCopiedId(null)
+      toast('Could not copy the link', 'error')
     }
   }
 
-  async function saveExpiration(id: string, expiresAt: string | null) {
-    if (savingId) {
-      return
-    }
-
-    setSavingId(id)
-    setExpireNotice(null)
-
-    try {
-      await updateUrlExpiration(id, expiresAt)
-      await load()
-      setExpireNotice({
-        id,
-        kind: 'ok',
-        text: expiresAt ? 'Expiration updated.' : 'Expiration removed.',
-      })
-    } catch (error) {
-      setExpireNotice({
-        id,
-        kind: 'error',
-        text:
-          error instanceof ApiError || error instanceof Error
-            ? error.message
-            : 'Could not update expiration',
-      })
-    } finally {
-      setSavingId(null)
-    }
-  }
-
-  function handleSetExpiration(id: string, currentExpiresAt: string | null) {
-    const expiration = parseExpiresInput(
-      drafts[id] ?? toDatetimeLocal(currentExpiresAt),
+  function handleDeleted(id: string) {
+    setState((current) =>
+      current.kind === 'ready'
+        ? { kind: 'ready', urls: current.urls.filter((url) => url.id !== id) }
+        : current,
     )
-
-    if ('error' in expiration) {
-      setExpireNotice({ id, kind: 'error', text: expiration.error })
-      return
+    if (openId === id) {
+      setOpenId(null)
     }
-
-    if (!expiration.expiresAt) {
-      setExpireNotice({
-        id,
-        kind: 'error',
-        text: 'Pick a date, or choose Never expire',
-      })
-      return
-    }
-
-    void saveExpiration(id, expiration.expiresAt)
   }
 
   if (status === 'loading') {
     return (
       <div className="dash">
-        <p className="status">Checking your session…</p>
+        <DashSkeleton />
       </div>
     )
   }
@@ -161,344 +168,409 @@ export function Dashboard({ onCreate }: DashboardProps) {
           <div>
             <h1 className="dash-title">Your links</h1>
             <p className="dash-lede">
-              Sign in to see the short links you've created and how many
-              clicks each one has.
+              Sign in to see the short links you've created and how each one is
+              performing.
             </p>
           </div>
-          <button
-            className="button button-primary button-compact"
-            type="button"
-            onClick={() => setAuthOpen(true)}
-          >
+          <button className="button button-primary button-compact" type="button" onClick={onSignIn}>
             Sign in
           </button>
         </div>
-        <GuestPreview onSignIn={() => setAuthOpen(true)} />
-        <AuthOverlay
-          open={authOpen}
-          message="Sign in to see your links."
-          onClose={() => setAuthOpen(false)}
-        />
+        <GuestPreview onSignIn={onSignIn} />
       </div>
     )
   }
 
-  const urls = state.kind === 'ready' ? state.urls : []
   const totalClicks = urls.reduce((sum, url) => sum + url.clickCount, 0)
   const activeCount = urls.filter((url) => !isExpired(url.expiresAt)).length
+  const topLink = urls.reduce<UrlStats | null>(
+    (best, url) => (url.clickCount > (best?.clickCount ?? 0) ? url : best),
+    null,
+  )
+  const dialogShortUrl = dialog ? getShortUrl(dialog.link.shortCode) : ''
 
   return (
     <div className="dash">
       <div className="dash-head">
         <div>
           <h1 className="dash-title">Your links</h1>
-          <p className="dash-stats">
-            {state.kind === 'ready'
-              ? `${urls.length} ${urls.length === 1 ? 'link' : 'links'} · ${totalClicks} ${totalClicks === 1 ? 'click' : 'clicks'} · ${activeCount} active`
-              : state.kind === 'loading'
-                ? 'Loading…'
-                : 'Could not load stats'}
-          </p>
+          <p className="dash-lede">Manage your short links and see how they perform.</p>
         </div>
         <div className="dash-actions">
           <button
-            className="text-action"
+            className="icon-button"
             type="button"
+            aria-label="Refresh"
+            title="Refresh"
             onClick={() => {
               void handleRefresh()
             }}
             disabled={state.kind === 'loading' || refreshing}
           >
-            {state.kind === 'loading' || refreshing ? 'Refreshing…' : 'Refresh'}
+            <RefreshIcon size={16} className={refreshing ? 'spin' : undefined} />
           </button>
-          <button
-            className="button button-primary button-compact"
-            type="button"
-            onClick={onCreate}
-          >
-            Shorten URL
+          <button className="button button-primary button-compact" type="button" onClick={onCreate}>
+            <PlusIcon size={14} />
+            New link
           </button>
         </div>
       </div>
 
-      <section className="dash-panel" aria-live="polite">
-        {state.kind === 'loading' ? (
-          <p className="status">Loading click stats…</p>
-        ) : state.kind === 'error' ? (
+      {state.kind === 'loading' ? (
+        <DashSkeleton />
+      ) : state.kind === 'error' ? (
+        <section className="dash-panel dash-message">
           <p className="status status-error">{state.message}</p>
-        ) : urls.length === 0 ? (
-          <div className="dash-empty">
-            <p className="status">No short URLs yet.</p>
-            <button
-              className="button button-ghost button-compact"
-              type="button"
-              onClick={onCreate}
-            >
-              Create one
-            </button>
+          <button
+            className="button button-ghost button-compact"
+            type="button"
+            onClick={() => {
+              setState({ kind: 'loading' })
+              void load()
+            }}
+          >
+            Try again
+          </button>
+        </section>
+      ) : urls.length === 0 ? (
+        <section className="dash-panel dash-empty">
+          <p className="dash-empty-title">No short links yet</p>
+          <p className="dash-lede">
+            Create your first link and its clicks will show up here.
+          </p>
+          <button className="button button-primary button-compact" type="button" onClick={onCreate}>
+            <PlusIcon size={14} />
+            Create a link
+          </button>
+        </section>
+      ) : (
+        <>
+          <div className="stats" role="list">
+            <Stat label="Links" value={urls.length.toLocaleString()} />
+            <Stat label="Total clicks" value={totalClicks.toLocaleString()} />
+            <Stat
+              label="Active"
+              value={activeCount.toLocaleString()}
+              hint={urls.length > activeCount ? `${urls.length - activeCount} expired` : undefined}
+            />
+            <Stat
+              label="Top link"
+              value={topLink ? `/${topLink.shortCode}` : '—'}
+              hint={topLink ? plural(topLink.clickCount, 'click') : 'No clicks yet'}
+              mono
+            />
           </div>
-        ) : (
-          <ul className="link-list">
-            {urls.map((url) => {
-              const shortUrl = getShortUrl(url.shortCode)
-              const expired = isExpired(url.expiresAt)
-              const open = openId === url.id
 
-              return (
-                <li key={url.id} className={`link-card${open ? ' is-open' : ''}`}>
-                  <div className="link-row">
-                    <div className="link-main">
-                      <a
-                        className="link-short"
-                        href={shortUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        {shortUrl}
-                      </a>
-                      <p className="original" title={url.originalUrl}>
-                        {url.originalUrl}
-                      </p>
-                    </div>
-                    <div className="link-aside">
-                      <span className="click-count">
-                        {url.clickCount} {url.clickCount === 1 ? 'click' : 'clicks'}
-                      </span>
-                      {expired ? (
-                        <span className="badge badge-expired">Expired</span>
-                      ) : null}
-                      <button
-                        className={`text-action${copiedId === url.id ? ' is-copied' : ''}`}
-                        type="button"
-                        onClick={() => {
-                          void handleCopy(url.id, shortUrl)
-                        }}
-                      >
-                        {copiedId === url.id ? 'Copied' : 'Copy'}
-                      </button>
-                      <button
-                        className="text-action"
-                        type="button"
-                        aria-expanded={open}
-                        onClick={() => setOpenId(open ? null : url.id)}
-                      >
-                        {open ? 'Hide' : 'Details'}
-                      </button>
-                    </div>
-                  </div>
+          <div className="toolbar">
+            <label className="search">
+              <SearchIcon size={15} />
+              <span className="label">Search links</span>
+              <input
+                type="search"
+                placeholder="Search by alias or destination"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+              />
+            </label>
+            <div className="chips" role="radiogroup" aria-label="Filter links">
+              {(['all', 'active', 'expired'] as const).map((value) => (
+                <button
+                  key={value}
+                  className={`chip${filter === value ? ' is-active' : ''}`}
+                  type="button"
+                  role="radio"
+                  aria-checked={filter === value}
+                  onClick={() => setFilter(value)}
+                >
+                  {value[0].toUpperCase() + value.slice(1)}
+                </button>
+              ))}
+            </div>
+            <label className="select">
+              <span className="label">Sort links</span>
+              <select value={sort} onChange={(event) => setSort(event.target.value as Sort)}>
+                <option value="newest">Newest first</option>
+                <option value="oldest">Oldest first</option>
+                <option value="clicks">Most clicks</option>
+                <option value="recent">Recently clicked</option>
+              </select>
+              <ChevronIcon size={14} />
+            </label>
+          </div>
 
-                  {open ? (
-                    <div className="link-details">
-                      <p className="link-detail-meta">
-                        Last click {formatWhen(url.lastClickedAt)}
-                        {url.expiresAt
-                          ? ` · ${expired ? 'Expired' : 'Expires'} ${formatWhen(url.expiresAt)}`
-                          : ' · Never expires'}
-                      </p>
-                      <Suspense
-                        fallback={
-                          <section className="clicks-over-time" aria-live="polite">
-                            <p className="clicks-over-time-kicker">Last 7 days</p>
-                            <p className="status">Loading daily clicks…</p>
-                          </section>
-                        }
-                      >
-                        <ClicksOverTime urlId={url.id} />
-                      </Suspense>
-                      {url.clickCount > 0 ? (
-                        <div className="link-analytics">
-                          <AnalyticsRow
-                            label="Device"
-                            items={url.analytics.devices}
-                          />
-                          <AnalyticsRow
-                            label="Browser"
-                            items={url.analytics.browsers}
-                          />
-                          <AnalyticsRow
-                            label="OS"
-                            items={url.analytics.operatingSystems}
-                          />
-                          <AnalyticsRow
-                            label="From"
-                            items={url.analytics.referrers}
-                          />
-                          <AnalyticsRow
-                            label="Country"
-                            items={url.analytics.countries}
-                          />
-                        </div>
-                      ) : (
-                        <p className="status">No clicks yet.</p>
-                      )}
-                      <div className="link-expire">
-                        <label className="label" htmlFor={`expire-${url.id}`}>
-                          Expiration
-                        </label>
-                        <input
-                          id={`expire-${url.id}`}
-                          className="field expire-input"
-                          type="datetime-local"
-                          value={drafts[url.id] ?? toDatetimeLocal(url.expiresAt)}
-                          disabled={savingId === url.id}
-                          onChange={(event) => {
-                            setDrafts((current) => ({
-                              ...current,
-                              [url.id]: event.target.value,
-                            }))
-                          }}
-                        />
-                        <button
-                          className="button button-ghost button-compact"
-                          type="button"
-                          disabled={savingId === url.id}
-                          onClick={() => handleSetExpiration(url.id, url.expiresAt)}
-                        >
-                          {savingId === url.id ? 'Saving…' : 'Set'}
-                        </button>
-                        <button
-                          className="button button-ghost button-compact"
-                          type="button"
-                          disabled={savingId === url.id || !url.expiresAt}
-                          onClick={() => {
-                            setDrafts((current) => ({ ...current, [url.id]: '' }))
-                            void saveExpiration(url.id, null)
-                          }}
-                        >
-                          Never expire
-                        </button>
-                      </div>
-                      {expireNotice?.id === url.id ? (
-                        <p
-                          className={
-                            expireNotice.kind === 'error'
-                              ? 'status status-error'
-                              : 'status'
-                          }
-                        >
-                          {expireNotice.text}
-                        </p>
-                      ) : null}
-                    </div>
-                  ) : null}
-                </li>
-              )
-            })}
-          </ul>
-        )}
-      </section>
+          <section className="dash-panel" aria-live="polite">
+            {visible.length === 0 ? (
+              <div className="dash-message">
+                <p className="status">No links match these filters.</p>
+                <button
+                  className="text-action"
+                  type="button"
+                  onClick={() => {
+                    setQuery('')
+                    setFilter('all')
+                  }}
+                >
+                  Clear filters
+                </button>
+              </div>
+            ) : (
+              <ul className="link-list">
+                {visible.map((url) => (
+                  <LinkCard
+                    key={url.id}
+                    url={url}
+                    open={openId === url.id}
+                    copied={copiedId === url.id}
+                    onToggle={() => setOpenId(openId === url.id ? null : url.id)}
+                    onCopy={(shortUrl) => {
+                      void handleCopy(url.id, shortUrl)
+                    }}
+                    onDialog={(kind) => setDialog({ kind, link: url })}
+                  />
+                ))}
+              </ul>
+            )}
+          </section>
+          <p className="dash-count">
+            Showing {visible.length} of {plural(urls.length, 'link')}
+          </p>
+        </>
+      )}
+
+      <EditLinkModal
+        key={`edit-${dialog?.kind === 'edit' ? dialog.link.id : ''}`}
+        link={dialog?.kind === 'edit' ? dialog.link : null}
+        shortUrl={dialogShortUrl}
+        onClose={() => setDialog(null)}
+        onSaved={() => {
+          void load()
+        }}
+      />
+      <DeleteLinkModal
+        key={`delete-${dialog?.kind === 'delete' ? dialog.link.id : ''}`}
+        link={dialog?.kind === 'delete' ? dialog.link : null}
+        shortUrl={dialogShortUrl}
+        onClose={() => setDialog(null)}
+        onDeleted={handleDeleted}
+      />
+      <QrModal
+        link={dialog?.kind === 'qr' ? dialog.link : null}
+        shortUrl={dialogShortUrl}
+        onClose={() => setDialog(null)}
+      />
     </div>
   )
 }
 
-type PreviewLink = {
-  code: string
-  original: string
-  clicks: number
-  lastClick: string
-  open?: boolean
-  devices?: { label: string; count: number }[]
-  countries?: { label: string; count: number }[]
-  referrers?: { label: string; count: number }[]
-}
-
-const PREVIEW_LINKS: PreviewLink[] = [
-  {
-    code: 'docs',
-    original: 'https://example.com/getting-started',
-    clicks: 48,
-    lastClick: '2 hours ago',
-    open: true,
-    devices: [
-      { label: 'desktop', count: 31 },
-      { label: 'mobile', count: 17 },
-    ],
-    countries: [
-      { label: 'India', count: 29 },
-      { label: 'United States', count: 12 },
-      { label: 'Germany', count: 7 },
-    ],
-    referrers: [
-      { label: 'direct', count: 22 },
-      { label: 'twitter.com', count: 16 },
-      { label: 'google.com', count: 10 },
-    ],
-  },
-  {
-    code: 'launch',
-    original: 'https://example.com/announcement',
-    clicks: 12,
-    lastClick: 'yesterday',
-  },
-  {
-    code: 'bio',
-    original: 'https://example.com/about',
-    clicks: 3,
-    lastClick: '4 days ago',
-  },
-]
-
-function GuestPreview({ onSignIn }: { onSignIn: () => void }) {
+function Stat({
+  label,
+  value,
+  hint,
+  mono,
+}: {
+  label: string
+  value: string
+  hint?: string
+  mono?: boolean
+}) {
   return (
-    <section className="dash-panel dash-preview">
-      <p className="dash-preview-tag">Example</p>
-      <ul className="link-list">
-        {PREVIEW_LINKS.map((link) => {
-          const shortUrl = getShortUrl(link.code)
-
-          return (
-            <li key={link.code} className={`link-card${link.open ? ' is-open' : ''}`}>
-              <div className="link-row">
-                <div className="link-main">
-                  <span className="link-short">{shortUrl}</span>
-                  <p className="original" title={link.original}>
-                    {link.original}
-                  </p>
-                </div>
-                <div className="link-aside">
-                  <span className="click-count">
-                    {link.clicks} {link.clicks === 1 ? 'click' : 'clicks'}
-                  </span>
-                  <span className="text-action">{link.open ? 'Hide' : 'Details'}</span>
-                </div>
-              </div>
-              {link.open ? (
-                <div className="link-details">
-                  <p className="link-detail-meta">Last click {link.lastClick} · Never expires</p>
-                  <div className="link-analytics">
-                    <AnalyticsRow label="Device" items={link.devices ?? []} />
-                    <AnalyticsRow label="From" items={link.referrers ?? []} />
-                    <AnalyticsRow label="Country" items={link.countries ?? []} />
-                  </div>
-                </div>
-              ) : null}
-            </li>
-          )
-        })}
-      </ul>
-      <button className="dash-preview-cover" type="button" onClick={onSignIn}>
-        Sign in to see your links
-      </button>
-    </section>
+    <div className="stat" role="listitem">
+      <span className="stat-label">{label}</span>
+      <span className={`stat-value${mono ? ' stat-value-mono' : ''}`} title={value}>
+        {value}
+      </span>
+      {hint ? <span className="stat-hint">{hint}</span> : null}
+    </div>
   )
 }
 
-function AnalyticsRow({
+type LinkCardProps = {
+  url: UrlStats
+  open: boolean
+  copied: boolean
+  onToggle: () => void
+  onCopy: (shortUrl: string) => void
+  onDialog: (kind: 'edit' | 'delete' | 'qr') => void
+}
+
+function LinkCard({ url, open, copied, onToggle, onCopy, onDialog }: LinkCardProps) {
+  const shortUrl = getShortUrl(url.shortCode)
+  const expired = isExpired(url.expiresAt)
+  const detailsId = `link-details-${url.id}`
+
+  return (
+    <li className={`link-card${open ? ' is-open' : ''}${expired ? ' is-expired' : ''}`}>
+      <div className="link-row">
+        <div className="link-main">
+          <div className="link-title">
+            <a className="link-short" href={shortUrl} target="_blank" rel="noreferrer">
+              {shortUrl.replace(/^https?:\/\//, '')}
+            </a>
+            {expired ? (
+              <span className="badge badge-expired">Expired</span>
+            ) : url.expiresAt ? (
+              <span className="badge" title={formatWhen(url.expiresAt)}>
+                Expires {relativeTime(url.expiresAt)}
+              </span>
+            ) : null}
+          </div>
+          <p className="original" title={url.originalUrl}>
+            <span className="original-host">{displayHost(url.originalUrl)}</span>
+            {url.originalUrl}
+          </p>
+          <p className="link-meta">
+            Created {relativeTime(url.createdAt)}
+            {url.lastClickedAt ? ` · Last click ${relativeTime(url.lastClickedAt)}` : ''}
+          </p>
+        </div>
+        <div className="link-aside">
+          <button
+            className="click-count"
+            type="button"
+            aria-expanded={open}
+            aria-controls={detailsId}
+            onClick={onToggle}
+          >
+            <strong>{url.clickCount.toLocaleString()}</strong>
+            {url.clickCount === 1 ? 'click' : 'clicks'}
+          </button>
+          <div className="link-tools">
+            <button
+              className={`icon-button${copied ? ' is-copied' : ''}`}
+              type="button"
+              aria-label={copied ? 'Copied' : `Copy ${shortUrl}`}
+              title={copied ? 'Copied' : 'Copy link'}
+              onClick={() => onCopy(shortUrl)}
+            >
+              {copied ? <CheckIcon size={15} /> : <CopyIcon size={15} />}
+            </button>
+            <button
+              className="icon-button"
+              type="button"
+              aria-label="Show QR code"
+              title="QR code"
+              onClick={() => onDialog('qr')}
+            >
+              <QrIcon size={15} />
+            </button>
+            <a
+              className="icon-button"
+              href={url.originalUrl}
+              target="_blank"
+              rel="noreferrer"
+              aria-label="Open destination"
+              title="Open destination (not counted as a click)"
+            >
+              <ExternalIcon size={15} />
+            </a>
+            <button
+              className="icon-button"
+              type="button"
+              aria-label="Edit link"
+              title="Edit"
+              onClick={() => onDialog('edit')}
+            >
+              <EditIcon size={15} />
+            </button>
+            <button
+              className="icon-button icon-button-danger"
+              type="button"
+              aria-label="Delete link"
+              title="Delete"
+              onClick={() => onDialog('delete')}
+            >
+              <TrashIcon size={15} />
+            </button>
+            <button
+              className={`icon-button details-toggle${open ? ' is-open' : ''}`}
+              type="button"
+              aria-label={open ? 'Hide analytics' : 'Show analytics'}
+              title={open ? 'Hide analytics' : 'Analytics'}
+              aria-expanded={open}
+              aria-controls={detailsId}
+              onClick={onToggle}
+            >
+              <ChevronIcon size={15} />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {open ? (
+        <div className="link-details" id={detailsId}>
+          <Suspense fallback={<div className="skeleton skeleton-chart" />}>
+            <ClicksOverTime urlId={url.id} />
+          </Suspense>
+          {url.clickCount > 0 ? (
+            <div className="breakdowns">
+              <BreakdownCard label="Browsers" items={url.analytics.browsers} total={url.clickCount} />
+              <BreakdownCard
+                label="Operating systems"
+                items={url.analytics.operatingSystems}
+                total={url.clickCount}
+              />
+              <BreakdownCard label="Referrers" items={url.analytics.referrers} total={url.clickCount} />
+              <BreakdownCard label="Countries" items={url.analytics.countries} total={url.clickCount} />
+            </div>
+          ) : (
+            <p className="status">No clicks yet. Share the link to start collecting analytics.</p>
+          )}
+          <p className="link-detail-meta">
+            Created {formatWhen(url.createdAt)} ·{' '}
+            {url.expiresAt
+              ? `${expired ? 'Expired' : 'Expires'} ${formatWhen(url.expiresAt)}`
+              : 'Never expires'}
+          </p>
+        </div>
+      ) : null}
+    </li>
+  )
+}
+
+const BREAKDOWN_LIMIT = 5
+
+function BreakdownCard({
   label,
   items,
+  total,
 }: {
   label: string
-  items: { label: string; count: number }[]
+  items: ClickBreakdown[]
+  total: number
 }) {
   if (items.length === 0) {
     return null
   }
 
+  const shown = items.slice(0, BREAKDOWN_LIMIT)
+  const rest = items.slice(BREAKDOWN_LIMIT).reduce((sum, item) => sum + item.count, 0)
+
   return (
-    <p>
-      <span className="analytics-label">{label}</span>
-      <Breakdown items={items} />
-    </p>
+    <div className="breakdown">
+      <p className="breakdown-title">{label}</p>
+      <ul className="breakdown-list">
+        {shown.map((item) => (
+          <BreakdownRow key={item.label} label={displayLabel(item.label)} count={item.count} total={total} />
+        ))}
+        {rest > 0 ? <BreakdownRow label="Other" count={rest} total={total} /> : null}
+      </ul>
+    </div>
+  )
+}
+
+function BreakdownRow({ label, count, total }: { label: string; count: number; total: number }) {
+  const share = total > 0 ? Math.round((count / total) * 100) : 0
+
+  return (
+    <li className="breakdown-row">
+      <span className="breakdown-bar" style={{ width: `${share}%` }} aria-hidden="true" />
+      <span className="breakdown-label" title={label}>
+        {label}
+      </span>
+      <span className="breakdown-count">
+        {count.toLocaleString()} <span className="breakdown-share">{share}%</span>
+      </span>
+    </li>
   )
 }
 
@@ -512,7 +584,7 @@ function displayLabel(label: string): string {
   }
 
   if (label === 'direct') {
-    return 'Direct'
+    return 'Direct / none'
   }
 
   if (label === 'desktop' || label === 'mobile' || label === 'tablet') {
@@ -522,50 +594,80 @@ function displayLabel(label: string): string {
   return label
 }
 
-function Breakdown({
-  items,
-}: {
-  items: { label: string; count: number }[]
-}) {
+function DashSkeleton() {
   return (
-    <span className="analytics-items">
-      {items.map((item) => (
-        <span key={item.label} className="analytics-item">
-          <span className="analytics-item-label">{displayLabel(item.label)}</span>
-          <span className="analytics-item-count">
-            {item.count} {item.count === 1 ? 'click' : 'clicks'}
-          </span>
-        </span>
-      ))}
-    </span>
+    <div className="dash-skeleton" aria-busy="true" aria-label="Loading your links">
+      <div className="stats">
+        {[0, 1, 2, 3].map((key) => (
+          <div key={key} className="stat">
+            <span className="skeleton skeleton-line skeleton-short" />
+            <span className="skeleton skeleton-line skeleton-value" />
+          </div>
+        ))}
+      </div>
+      <div className="dash-panel">
+        {[0, 1, 2].map((key) => (
+          <div key={key} className="link-card">
+            <span className="skeleton skeleton-line skeleton-medium" />
+            <span className="skeleton skeleton-line skeleton-long" />
+          </div>
+        ))}
+      </div>
+    </div>
   )
 }
 
-function isExpired(expiresAt: string | null): boolean {
-  return Boolean(expiresAt && Date.parse(expiresAt) <= Date.now())
+type PreviewLink = {
+  code: string
+  original: string
+  clicks: number
+  created: string
 }
 
-function toDatetimeLocal(iso: string | null): string {
-  if (!iso) {
-    return ''
-  }
+const PREVIEW_LINKS: PreviewLink[] = [
+  { code: 'docs', original: 'https://example.com/getting-started', clicks: 48, created: '2 days ago' },
+  { code: 'launch', original: 'https://example.com/announcement', clicks: 12, created: 'last week' },
+  { code: 'bio', original: 'https://example.com/about', clicks: 3, created: 'last month' },
+]
 
-  const date = new Date(iso)
-  if (Number.isNaN(date.getTime())) {
-    return ''
-  }
-
-  const pad = (value: number) => String(value).padStart(2, '0')
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
-}
-
-function formatWhen(iso: string | null): string {
-  if (!iso) {
-    return 'never'
-  }
-
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(new Date(iso))
+function GuestPreview({ onSignIn }: { onSignIn: () => void }) {
+  return (
+    <section className="dash-preview" aria-label="Example dashboard">
+      <div className="stats" aria-hidden="true">
+        <Stat label="Links" value="3" />
+        <Stat label="Total clicks" value="63" />
+        <Stat label="Active" value="3" />
+        <Stat label="Top link" value="/docs" hint="48 clicks" mono />
+      </div>
+      <div className="dash-panel" aria-hidden="true">
+        <ul className="link-list">
+          {PREVIEW_LINKS.map((link) => (
+            <li key={link.code} className="link-card">
+              <div className="link-row">
+                <div className="link-main">
+                  <span className="link-short">
+                    {getShortUrl(link.code).replace(/^https?:\/\//, '')}
+                  </span>
+                  <p className="original">
+                    <span className="original-host">{displayHost(link.original)}</span>
+                    {link.original}
+                  </p>
+                  <p className="link-meta">Created {link.created}</p>
+                </div>
+                <div className="link-aside">
+                  <span className="click-count">
+                    <strong>{link.clicks}</strong>
+                    clicks
+                  </span>
+                </div>
+              </div>
+            </li>
+          ))}
+        </ul>
+      </div>
+      <button className="dash-preview-cover" type="button" onClick={onSignIn}>
+        <span className="button button-primary button-compact">Sign in to see your links</span>
+      </button>
+    </section>
+  )
 }

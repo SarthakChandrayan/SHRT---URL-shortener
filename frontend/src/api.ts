@@ -80,16 +80,33 @@ function shortOrigin(): string {
   return window.location.origin
 }
 
+/** e.g. "shrt.example.com/" — shown in front of the custom-alias field. */
+export function getShortPrefix(): string {
+  return `${shortOrigin().replace(/^https?:\/\//, '')}/`
+}
+
 export function getShortUrl(shortCode: string): string {
   const origin = shortOrigin()
   return origin ? `${origin}/${shortCode}` : `/${shortCode}`
 }
 
-export async function createShortUrl(originalUrl: string): Promise<CreatedUrl> {
+export type CreateUrlOptions = {
+  alias?: string | null
+  expiresAt?: string | null
+}
+
+export async function createShortUrl(
+  originalUrl: string,
+  options: CreateUrlOptions = {},
+): Promise<CreatedUrl> {
   const payload = await requestJson('/api/urls', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(await authHeader()) },
-    body: JSON.stringify({ originalUrl }),
+    body: JSON.stringify({
+      originalUrl,
+      alias: options.alias?.trim() || undefined,
+      expiresAt: options.expiresAt ?? undefined,
+    }),
   })
 
   if (!isCreatedUrl(payload)) {
@@ -126,9 +143,16 @@ export function listUrls(): Promise<UrlStats[]> {
   return listUrlsInflight
 }
 
-export async function getUrlAnalytics(id: string, init?: RequestInit): Promise<UrlClicksOverTime> {
+export async function getUrlAnalytics(
+  id: string,
+  range: { startDate: string; endDate: string } | null,
+  init?: RequestInit,
+): Promise<UrlClicksOverTime> {
   const { headers, ...rest } = init ?? {}
-  const payload = await requestJson(`/api/urls/${encodeURIComponent(id)}/analytics`, {
+  const query = range
+    ? `?startDate=${encodeURIComponent(range.startDate)}&endDate=${encodeURIComponent(range.endDate)}`
+    : ''
+  const payload = await requestJson(`/api/urls/${encodeURIComponent(id)}/analytics${query}`, {
     cache: 'no-store',
     ...rest,
     headers: { ...(await authHeader()), ...headers },
@@ -141,14 +165,16 @@ export async function getUrlAnalytics(id: string, init?: RequestInit): Promise<U
   return payload
 }
 
-export async function updateUrlExpiration(
-  id: string,
-  expiresAt: string | null,
-): Promise<CreatedUrl> {
-  const payload = await requestJson(`/api/urls/${id}`, {
+export type UrlPatch = {
+  originalUrl?: string
+  expiresAt?: string | null
+}
+
+export async function updateUrl(id: string, patch: UrlPatch): Promise<CreatedUrl> {
+  const payload = await requestJson(`/api/urls/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json', ...(await authHeader()) },
-    body: JSON.stringify({ expiresAt }),
+    body: JSON.stringify(patch),
   })
 
   if (!isCreatedUrl(payload)) {
@@ -156,6 +182,39 @@ export async function updateUrlExpiration(
   }
 
   return payload
+}
+
+export async function deleteUrl(id: string): Promise<void> {
+  await requestJson(`/api/urls/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    headers: await authHeader(),
+  })
+}
+
+export type AliasAvailability = { available: true } | { available: false; reason: string }
+
+export async function checkAliasAvailability(
+  alias: string,
+  init?: RequestInit,
+): Promise<AliasAvailability> {
+  const { headers, ...rest } = init ?? {}
+  const payload = await requestJson(
+    `/api/urls/alias-availability?alias=${encodeURIComponent(alias)}`,
+    { cache: 'no-store', ...rest, headers: { ...(await authHeader()), ...headers } },
+  )
+
+  if (payload !== null && typeof payload === 'object' && 'available' in payload) {
+    const record = payload as { available: unknown; reason?: unknown }
+    if (record.available === true) {
+      return { available: true }
+    }
+    return {
+      available: false,
+      reason: typeof record.reason === 'string' ? record.reason : 'Unavailable',
+    }
+  }
+
+  throw new ApiError('Unexpected response from the server')
 }
 
 async function authHeader(): Promise<HeadersInit> {
@@ -174,6 +233,10 @@ async function requestJson(path: string, init?: RequestInit): Promise<unknown> {
     }
 
     throw new ApiError('Could not reach the server. Check that the API is running.')
+  }
+
+  if (response.status === 204) {
+    return null
   }
 
   const payload: unknown = await response.json().catch(() => null)
@@ -195,7 +258,7 @@ function messageForStatus(status: number, payload: unknown): string {
   }
 
   if (status === 404) {
-    return readErrorMessage(payload) ?? 'The shortening service could not be found'
+    return readErrorMessage(payload) ?? 'Not found'
   }
 
   if (status === 410) {
@@ -210,7 +273,15 @@ function messageForStatus(status: number, payload: unknown): string {
     return readErrorMessage(payload) ?? 'Sign in to continue'
   }
 
-  return readErrorMessage(payload) ?? 'Could not shorten this URL'
+  if (status === 409) {
+    return readErrorMessage(payload) ?? 'That alias is already taken'
+  }
+
+  if (status === 429) {
+    return 'Too many requests. Wait a moment and try again.'
+  }
+
+  return readErrorMessage(payload) ?? 'Something went wrong. Try again.'
 }
 
 function readErrorMessage(payload: unknown): string | null {

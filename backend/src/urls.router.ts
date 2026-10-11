@@ -1,8 +1,9 @@
 import { Prisma } from "@prisma/client";
 import { Router } from "express";
+import { parseAlias } from "./alias.js";
 import { requireAuth } from "./auth.js";
 import type { ClickBreakdown } from "./click-analytics.js";
-import { sendError } from "./errors.js";
+import { HttpError, sendError } from "./errors.js";
 import { parseExpiresAt } from "./expires-at.js";
 import { parseOriginalUrl } from "./original-url.js";
 import { prisma } from "./prisma.js";
@@ -55,19 +56,53 @@ urlsRouter.post("/", createUrlLimiter, requireAuth, async (req, res, next) => {
     return;
   }
 
+  const alias = parseAlias(req.body?.alias);
+
+  if (!alias.ok) {
+    sendError(res, 400, alias.error);
+    return;
+  }
+
   try {
-    const url = await createUrl(parsed.href, req.userId!, expiration.expiresAt);
+    const url = await createUrl(
+      parsed.href,
+      req.userId!,
+      expiration.expiresAt,
+      alias.alias,
+    );
     invalidateUrlListCache(req.userId!);
     res.status(201).json(url);
   } catch (error) {
-    if (
-      error instanceof Error &&
-      error.message === "SHORT_CODE_GENERATION_FAILED"
-    ) {
-      sendError(res, 500, "Could not generate a unique short code");
-      return;
-    }
+    next(error);
+  }
+});
 
+urlsRouter.get("/alias-availability", requireAuth, async (req, res, next) => {
+  const alias = parseAlias(req.query.alias);
+
+  if (!alias.ok) {
+    res.json({ available: false, reason: alias.error });
+    return;
+  }
+
+  if (!alias.alias) {
+    sendError(res, 400, "alias is required");
+    return;
+  }
+
+  try {
+    const existing = await prisma.url.findUnique({
+      where: { shortCode: alias.alias },
+      select: { id: true },
+    });
+
+    res.set("Cache-Control", "no-store");
+    res.json(
+      existing
+        ? { available: false, reason: "That alias is already taken" }
+        : { available: true },
+    );
+  } catch (error) {
     next(error);
   }
 });
@@ -123,15 +158,33 @@ urlsRouter.patch("/:id", requireAuth, async (req, res, next) => {
     return;
   }
 
-  if (!("expiresAt" in (req.body ?? {}))) {
-    sendError(res, 400, "expiresAt is required");
-    return;
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const data: { originalUrl?: string; expiresAt?: Date | null } = {};
+
+  if ("originalUrl" in body) {
+    const parsed = parseOriginalUrl(body.originalUrl);
+
+    if (!parsed.ok) {
+      sendError(res, 400, parsed.error);
+      return;
+    }
+
+    data.originalUrl = parsed.href;
   }
 
-  const expiration = parseExpiresAt(req.body.expiresAt);
+  if ("expiresAt" in body) {
+    const expiration = parseExpiresAt(body.expiresAt);
 
-  if (!expiration.ok) {
-    sendError(res, 400, expiration.error);
+    if (!expiration.ok) {
+      sendError(res, 400, expiration.error);
+      return;
+    }
+
+    data.expiresAt = expiration.expiresAt;
+  }
+
+  if (Object.keys(data).length === 0) {
+    sendError(res, 400, "Provide originalUrl and/or expiresAt to update");
     return;
   }
 
@@ -148,7 +201,7 @@ urlsRouter.patch("/:id", requireAuth, async (req, res, next) => {
 
     const url = await prisma.url.update({
       where: { id: existing.id },
-      data: { expiresAt: expiration.expiresAt },
+      data,
       select: {
         id: true,
         originalUrl: true,
@@ -160,6 +213,32 @@ urlsRouter.patch("/:id", requireAuth, async (req, res, next) => {
 
     invalidateUrlListCache(req.userId!);
     res.json(url);
+  } catch (error) {
+    next(error);
+  }
+});
+
+urlsRouter.delete("/:id", requireAuth, async (req, res, next) => {
+  const id = req.params.id;
+
+  if (typeof id !== "string" || id.trim() === "") {
+    sendError(res, 404, "Short URL not found");
+    return;
+  }
+
+  try {
+    // Scoping by userId makes this a no-op for links the caller doesn't own.
+    const { count } = await prisma.url.deleteMany({
+      where: { id, userId: req.userId },
+    });
+
+    if (count === 0) {
+      sendError(res, 404, "Short URL not found");
+      return;
+    }
+
+    invalidateUrlListCache(req.userId!);
+    res.status(204).end();
   } catch (error) {
     next(error);
   }
@@ -527,7 +606,31 @@ async function createUrl(
   originalUrl: string,
   userId: string,
   expiresAt: Date | null,
+  alias: string | null,
 ) {
+  const select = {
+    id: true,
+    originalUrl: true,
+    shortCode: true,
+    createdAt: true,
+    expiresAt: true,
+  } as const;
+
+  if (alias) {
+    try {
+      return await prisma.url.create({
+        data: { originalUrl, userId, expiresAt, shortCode: alias },
+        select,
+      });
+    } catch (error) {
+      if (isUniqueConflict(error)) {
+        throw new HttpError(409, "That alias is already taken");
+      }
+
+      throw error;
+    }
+  }
+
   for (let attempt = 0; attempt < MAX_SHORT_CODE_ATTEMPTS; attempt += 1) {
     try {
       return await prisma.url.create({
@@ -537,23 +640,21 @@ async function createUrl(
           expiresAt,
           shortCode: generateShortCode(),
         },
+        select,
       });
     } catch (error) {
-      const isUniqueConflict =
-        error instanceof Prisma.PrismaClientKnownRequestError &&
-        error.code === "P2002";
-
-      if (isUniqueConflict && attempt < MAX_SHORT_CODE_ATTEMPTS - 1) {
-        continue;
+      if (!isUniqueConflict(error)) {
+        throw error;
       }
-
-      if (isUniqueConflict) {
-        throw new Error("SHORT_CODE_GENERATION_FAILED");
-      }
-
-      throw error;
     }
   }
 
-  throw new Error("SHORT_CODE_GENERATION_FAILED");
+  throw new HttpError(500, "Could not generate a unique short code");
+}
+
+function isUniqueConflict(error: unknown): boolean {
+  return (
+    error instanceof Prisma.PrismaClientKnownRequestError &&
+    error.code === "P2002"
+  );
 }

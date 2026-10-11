@@ -1,39 +1,61 @@
+import { useState } from 'react'
 import { useAuth } from './AuthContext.tsx'
+import { ChartIcon } from './icons.tsx'
+import { Modal } from './Modal.tsx'
 
 type ProfileOverlayProps = {
   open: boolean
   onClose: () => void
+  onOpenDashboard: () => void
 }
 
-export function ProfileOverlay({ open, onClose }: ProfileOverlayProps) {
-  const { user } = useAuth()
+export function ProfileOverlay({ open, onClose, onOpenDashboard }: ProfileOverlayProps) {
+  const { user, signOut } = useAuth()
+  const [signingOut, setSigningOut] = useState(false)
 
-  if (!open || !user) {
+  if (!user) {
     return null
   }
 
+  const initials = (user.name || user.email).trim().slice(0, 1).toUpperCase()
+
+  async function handleSignOut() {
+    setSigningOut(true)
+    try {
+      await signOut()
+      onClose()
+    } finally {
+      setSigningOut(false)
+    }
+  }
+
   return (
-    <div className="overlay" role="dialog" aria-modal="true" aria-labelledby="profile-title">
-      <button
-        className="overlay-backdrop"
-        type="button"
-        aria-label="Close"
-        onClick={onClose}
-      />
-      <div className="overlay-panel">
-        <div className="overlay-head">
-          <h2 id="profile-title" className="auth-title">
-            Your profile
-          </h2>
-          <button className="overlay-close" type="button" onClick={onClose} aria-label="Close">
-            ×
-          </button>
-        </div>
-        <div className="profile-identity">
+    <Modal open={open} title="Your account" onClose={onClose} size="small">
+      <div className="profile-identity">
+        <span className="avatar avatar-large" aria-hidden="true">
+          {initials}
+        </span>
+        <div className="profile-text">
           {user.name ? <p className="profile-name">{user.name}</p> : null}
           <p className="profile-email">{user.email}</p>
         </div>
       </div>
-    </div>
+      <div className="profile-actions">
+        <button className="button button-ghost" type="button" onClick={onOpenDashboard}>
+          <ChartIcon size={14} />
+          Your links
+        </button>
+        <button
+          className="button button-ghost button-danger"
+          type="button"
+          disabled={signingOut}
+          onClick={() => {
+            void handleSignOut()
+          }}
+        >
+          {signingOut ? 'Signing out…' : 'Sign out'}
+        </button>
+      </div>
+    </Modal>
   )
 }

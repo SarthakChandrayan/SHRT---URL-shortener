@@ -15,6 +15,10 @@ import {
   type DeviceClicks,
   type UrlClicksOverTime,
 } from './api.ts'
+import { plural, utcRange } from './format.ts'
+
+const RANGES = [7, 30, 90] as const
+type RangeDays = (typeof RANGES)[number]
 
 type ChartState =
   | { kind: 'loading' }
@@ -28,13 +32,14 @@ type ClicksOverTimeProps = {
 export function ClicksOverTime({ urlId }: ClicksOverTimeProps) {
   const [state, setState] = useState<ChartState>({ kind: 'loading' })
   const [reload, setReload] = useState(0)
+  const [days, setDays] = useState<RangeDays>(7)
 
   useEffect(() => {
     const controller = new AbortController()
 
     setState({ kind: 'loading' })
 
-    void getUrlAnalytics(urlId, { signal: controller.signal })
+    void getUrlAnalytics(urlId, utcRange(days), { signal: controller.signal })
       .then((series) => {
         if (!controller.signal.aborted) {
           setState({ kind: 'ready', series })
@@ -55,13 +60,33 @@ export function ClicksOverTime({ urlId }: ClicksOverTimeProps) {
       })
 
     return () => controller.abort()
-  }, [urlId, reload])
+  }, [urlId, reload, days])
+
+  const rangePicker = (
+    <div className="chips chips-small" role="radiogroup" aria-label="Date range">
+      {RANGES.map((value) => (
+        <button
+          key={value}
+          className={`chip${days === value ? ' is-active' : ''}`}
+          type="button"
+          role="radio"
+          aria-checked={days === value}
+          onClick={() => setDays(value)}
+        >
+          {value}d
+        </button>
+      ))}
+    </div>
+  )
 
   if (state.kind === 'loading') {
     return (
-      <section className="clicks-over-time" aria-live="polite">
-        <p className="clicks-over-time-kicker">Last 7 days</p>
-        <p className="status">Loading daily clicks…</p>
+      <section className="clicks-over-time" aria-live="polite" aria-busy="true">
+        <div className="clicks-over-time-head">
+          <p className="clicks-over-time-kicker">Clicks · last {days} days</p>
+          {rangePicker}
+        </div>
+        <div className="skeleton skeleton-chart" />
       </section>
     )
   }
@@ -69,7 +94,10 @@ export function ClicksOverTime({ urlId }: ClicksOverTimeProps) {
   if (state.kind === 'error') {
     return (
       <section className="clicks-over-time" aria-live="polite">
-        <p className="clicks-over-time-kicker">Last 7 days</p>
+        <div className="clicks-over-time-head">
+          <p className="clicks-over-time-kicker">Clicks · last {days} days</p>
+          {rangePicker}
+        </div>
         <p className="status status-error">{state.message}</p>
         <button
           className="text-action"
@@ -92,15 +120,18 @@ export function ClicksOverTime({ urlId }: ClicksOverTimeProps) {
   return (
     <section
       className="clicks-over-time"
-      aria-label={`Clicks over the last 7 days, ${rangeLabel}. ${total} ${total === 1 ? 'click' : 'clicks'} in total.`}
+      aria-label={`Clicks over the last ${days} days, ${rangeLabel}. ${plural(total, 'click')} in total.`}
     >
       <div className="clicks-over-time-head">
-        <p className="clicks-over-time-kicker">Last 7 days</p>
-        <p className="clicks-over-time-range">{rangeLabel}</p>
+        <p className="clicks-over-time-kicker">
+          {plural(total, 'click')} · last {days} days
+          <span className="clicks-over-time-range">{rangeLabel}</span>
+        </p>
+        {rangePicker}
       </div>
       <div className="clicks-over-time-chart">
         <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={chartData} margin={{ top: 8, right: 4, left: -18, bottom: 0 }}>
+          <BarChart data={chartData} margin={{ top: 8, right: 4, left: 0, bottom: 0 }}>
             <CartesianGrid
               vertical={false}
               stroke="rgba(210, 245, 252, 0.12)"
@@ -111,13 +142,14 @@ export function ClicksOverTime({ urlId }: ClicksOverTimeProps) {
               axisLine={false}
               tickLine={false}
               tick={{ fill: '#7d93a1', fontSize: 10, fontFamily: 'IBM Plex Mono, ui-monospace, monospace' }}
-              interval={0}
+              interval={days > 14 ? 'preserveStartEnd' : 0}
+              minTickGap={12}
             />
             <YAxis
               allowDecimals={false}
               axisLine={false}
               tickLine={false}
-              width={28}
+              width={36}
               tick={{ fill: '#7d93a1', fontSize: 10, fontFamily: 'IBM Plex Mono, ui-monospace, monospace' }}
               domain={[0, (max: number) => Math.max(max, 1)]}
             />
@@ -125,7 +157,7 @@ export function ClicksOverTime({ urlId }: ClicksOverTimeProps) {
               cursor={{ fill: 'rgba(62, 198, 216, 0.08)' }}
               content={<DayTooltip />}
             />
-            <Bar dataKey="clicks" fill="#3ec6d8" maxBarSize={28} radius={[2, 2, 0, 0]} />
+            <Bar dataKey="clicks" fill="#3ec6d8" maxBarSize={28} radius={[3, 3, 0, 0]} />
           </BarChart>
         </ResponsiveContainer>
       </div>
@@ -142,7 +174,7 @@ function DeviceBreakdown({ devices }: { devices: DeviceClicks[] }) {
 
   return (
     <div className="device-breakdown">
-      <p className="clicks-over-time-kicker">Device</p>
+      <p className="breakdown-title">Devices</p>
       <ul className="device-breakdown-list">
         {devices.map((item) => {
           const share = total > 0 ? (item.clicks / total) * 100 : 0

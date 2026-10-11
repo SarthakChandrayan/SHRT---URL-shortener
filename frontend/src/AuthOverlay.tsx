@@ -1,12 +1,12 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { useAuth } from './AuthContext.tsx'
+import { Modal } from './Modal.tsx'
 
 type AuthMode = 'signup' | 'signin'
 type AuthStep = 'credentials' | 'verify'
 
 type AuthOverlayProps = {
   open: boolean
-  message?: string
   onClose: () => void
 }
 
@@ -160,22 +160,7 @@ export function AuthOverlay({ open, onClose }: AuthOverlayProps) {
 
   if (step === 'verify') {
     return (
-      <div className="overlay" role="dialog" aria-modal="true" aria-labelledby="auth-title">
-        <button
-          className="overlay-backdrop"
-          type="button"
-          aria-label="Close"
-          onClick={handleClose}
-        />
-        <div className="overlay-panel">
-          <div className="overlay-head">
-            <h2 id="auth-title" className="auth-title">
-              Check your email
-            </h2>
-            <button className="overlay-close" type="button" onClick={handleClose} aria-label="Close">
-              ×
-            </button>
-          </div>
+      <Modal open title="Check your email" onClose={handleClose}>
 
           <p className="auth-copy">
             Enter the 6-digit code we sent to <span className="auth-email">{email}</span>.
@@ -232,10 +217,9 @@ export function AuthOverlay({ open, onClose }: AuthOverlayProps) {
             </button>
           </p>
 
-          {notice ? <p className="auth-notice">{notice}</p> : null}
-          {error ? <p className="status status-error auth-error">{error}</p> : null}
-        </div>
-      </div>
+          {notice ? <p className="auth-notice" role="status">{notice}</p> : null}
+          {error ? <p className="status status-error auth-error" role="alert">{error}</p> : null}
+      </Modal>
     )
   }
 
@@ -246,22 +230,7 @@ export function AuthOverlay({ open, onClose }: AuthOverlayProps) {
       : 'Sign in to manage the links you\'ve created.'
 
   return (
-    <div className="overlay" role="dialog" aria-modal="true" aria-labelledby="auth-title">
-      <button
-        className="overlay-backdrop"
-        type="button"
-        aria-label="Close"
-        onClick={handleClose}
-      />
-      <div className="overlay-panel">
-        <div className="overlay-head">
-          <h2 id="auth-title" className="auth-title">
-            {heading}
-          </h2>
-          <button className="overlay-close" type="button" onClick={handleClose} aria-label="Close">
-            ×
-          </button>
-        </div>
+    <Modal open title={heading} onClose={handleClose}>
 
         <div className="auth-tabs" role="tablist" aria-label="Account">
           <button
@@ -312,7 +281,7 @@ export function AuthOverlay({ open, onClose }: AuthOverlayProps) {
                 id="auth-name"
                 className="field"
                 type="text"
-                autoComplete="off"
+                autoComplete="name"
                 placeholder="Your name"
                 value={name}
                 disabled={submitting}
@@ -362,10 +331,9 @@ export function AuthOverlay({ open, onClose }: AuthOverlayProps) {
           </button>
         </form>
 
-        {notice ? <p className="auth-notice">{notice}</p> : null}
-        {error ? <p className="status status-error auth-error">{error}</p> : null}
-      </div>
-    </div>
+        {notice ? <p className="auth-notice" role="status">{notice}</p> : null}
+        {error ? <p className="status status-error auth-error" role="alert">{error}</p> : null}
+    </Modal>
   )
 }
 

@@ -9,7 +9,7 @@
       "destination": "/index.html"
     },
     {
-      "source": "/:shortCode([0-9A-Za-z]{1,64})",
+      "source": "/:shortCode([0-9A-Za-z_-]{1,64})",
       "destination": "https://shrt-url-shortener.onrender.com/:shortCode"
     },
     {
