@@ -3,7 +3,7 @@ import { useAuth } from './AuthContext.tsx'
 import { Modal } from './Modal.tsx'
 
 type AuthMode = 'signup' | 'signin'
-type AuthStep = 'credentials' | 'verify'
+type AuthStep = 'credentials' | 'verify' | 'forgot' | 'reset'
 
 type AuthOverlayProps = {
   open: boolean
@@ -18,6 +18,8 @@ export function AuthOverlay({ open, onClose, oauthError = null }: AuthOverlayPro
     signInWithEmail,
     verifyEmailOtp,
     resendVerificationEmail,
+    requestPasswordReset,
+    resetPassword,
     signInWithGoogle,
   } = useAuth()
   const [mode, setMode] = useState<AuthMode>(oauthError ? 'signin' : 'signup')
@@ -26,6 +28,7 @@ export function AuthOverlay({ open, onClose, oauthError = null }: AuthOverlayPro
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [code, setCode] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
   const [error, setError] = useState<string | null>(oauthError)
   const [notice, setNotice] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
@@ -39,6 +42,7 @@ export function AuthOverlay({ open, onClose, oauthError = null }: AuthOverlayPro
     setEmail('')
     setPassword('')
     setCode('')
+    setConfirmPassword('')
     setError(null)
     setNotice(null)
     setSubmitting(false)
@@ -160,9 +164,225 @@ export function AuthOverlay({ open, onClose, oauthError = null }: AuthOverlayPro
     }
   }
 
+  function goTo(next: AuthStep) {
+    setError(null)
+    setNotice(null)
+    setCode('')
+    setStep(next)
+  }
+
+  async function handleSendResetCode(event?: FormEvent<HTMLFormElement>) {
+    event?.preventDefault()
+
+    if (submitting) {
+      return
+    }
+
+    setSubmitting(true)
+    setError(null)
+    setNotice(null)
+
+    const result = await requestPasswordReset(email)
+
+    setSubmitting(false)
+
+    if (result) {
+      setError(result)
+      return
+    }
+
+    // The service answers the same whether or not the email has an account,
+    // so this doesn't reveal which emails are registered.
+    setPassword('')
+    setConfirmPassword('')
+    setCode('')
+    setStep('reset')
+    setNotice(event ? null : 'A new code is on its way.')
+  }
+
+  async function handleResetPassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+
+    if (submitting) {
+      return
+    }
+
+    if (password.length < 8) {
+      setError('Password must be at least 8 characters')
+      return
+    }
+
+    if (password !== confirmPassword) {
+      setError('Passwords don’t match')
+      return
+    }
+
+    setSubmitting(true)
+    setError(null)
+    setNotice(null)
+
+    const result = await resetPassword(email, code, password)
+
+    if (result.kind === 'error') {
+      setError(result.message)
+      setSubmitting(false)
+      return
+    }
+
+    // 'signed-in' closes the dialog via the auth status change.
+    if (result.kind === 'reset') {
+      setMode('signin')
+      setStep('credentials')
+      setCode('')
+      setConfirmPassword('')
+      setNotice('Password updated. Sign in with your new password.')
+    }
+
+    setSubmitting(false)
+  }
+
+  if (step === 'forgot') {
+    return (
+      <Modal key="forgot" open title="Reset your password" onClose={handleClose}>
+        <p className="auth-copy">
+          Enter your account email and we’ll send you a 6-digit code to set a new password.
+        </p>
+        <form className="auth-form" onSubmit={(event) => void handleSendResetCode(event)}>
+          <div className="auth-field">
+            <label className="auth-field-label" htmlFor="reset-email">
+              Email
+            </label>
+            <input
+              id="reset-email"
+              className="field"
+              type="email"
+              autoComplete="email"
+              placeholder="you@example.com"
+              value={email}
+              required
+              disabled={submitting}
+              onChange={(event) => setEmail(event.target.value)}
+            />
+          </div>
+          <button className="button button-primary" type="submit" disabled={submitting}>
+            {submitting ? 'Sending…' : 'Send reset code'}
+          </button>
+        </form>
+        <p className="auth-verify-actions">
+          <button
+            className="link-button"
+            type="button"
+            disabled={submitting}
+            onClick={() => {
+              setMode('signin')
+              goTo('credentials')
+            }}
+          >
+            Back to sign in
+          </button>
+        </p>
+        {error ? <p className="status status-error auth-error" role="alert">{error}</p> : null}
+      </Modal>
+    )
+  }
+
+  if (step === 'reset') {
+    return (
+      <Modal key="reset" open title="Set a new password" onClose={handleClose}>
+        <p className="auth-copy">
+          If <span className="auth-email">{email}</span> has an account, we sent it a
+          6-digit code. Enter it below with your new password.
+        </p>
+        <form className="auth-form" onSubmit={(event) => void handleResetPassword(event)}>
+          <div className="auth-field">
+            <label className="auth-field-label" htmlFor="reset-otp">
+              Code
+            </label>
+            <input
+              id="reset-otp"
+              className="field auth-otp"
+              type="text"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              placeholder="000000"
+              value={code}
+              required
+              minLength={6}
+              maxLength={6}
+              disabled={submitting}
+              onChange={(event) => setCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
+            />
+          </div>
+          <div className="auth-field">
+            <label className="auth-field-label" htmlFor="reset-password">
+              New password
+            </label>
+            <input
+              id="reset-password"
+              className="field"
+              type="password"
+              autoComplete="new-password"
+              placeholder="At least 8 characters"
+              value={password}
+              required
+              minLength={8}
+              disabled={submitting}
+              onChange={(event) => setPassword(event.target.value)}
+            />
+          </div>
+          <div className="auth-field">
+            <label className="auth-field-label" htmlFor="reset-confirm">
+              Confirm new password
+            </label>
+            <input
+              id="reset-confirm"
+              className="field"
+              type="password"
+              autoComplete="new-password"
+              value={confirmPassword}
+              required
+              minLength={8}
+              disabled={submitting}
+              onChange={(event) => setConfirmPassword(event.target.value)}
+            />
+          </div>
+          <button
+            className="button button-primary"
+            type="submit"
+            disabled={submitting || code.length !== 6}
+          >
+            {submitting ? 'Please wait…' : 'Update password'}
+          </button>
+        </form>
+        <p className="auth-verify-actions">
+          <button
+            className="link-button"
+            type="button"
+            disabled={submitting}
+            onClick={() => {
+              void handleSendResetCode()
+            }}
+          >
+            Resend code
+          </button>
+          <button
+            className="link-button"
+            type="button"
+            disabled={submitting}
+            onClick={() => goTo('forgot')}
+          >
+            Use a different email
+          </button>
+        </p>
+        {notice ? <p className="auth-notice" role="status">{notice}</p> : null}
+        {error ? <p className="status status-error auth-error" role="alert">{error}</p> : null}
+      </Modal>
+    )
+  }
+
   if (step === 'verify') {
     return (
-      <Modal open title="Check your email" onClose={handleClose}>
+      <Modal key="verify" open title="Check your email" onClose={handleClose}>
 
           <p className="auth-copy">
             Enter the 6-digit code we sent to <span className="auth-email">{email}</span>.
@@ -232,7 +452,7 @@ export function AuthOverlay({ open, onClose, oauthError = null }: AuthOverlayPro
       : 'Sign in to manage the links you\'ve created.'
 
   return (
-    <Modal open title={heading} onClose={handleClose}>
+    <Modal key="credentials" open title={heading} onClose={handleClose}>
 
         <div className="auth-tabs" role="tablist" aria-label="Account">
           <button
@@ -308,9 +528,21 @@ export function AuthOverlay({ open, onClose, oauthError = null }: AuthOverlayPro
             />
           </div>
           <div className="auth-field">
-            <label className="auth-field-label" htmlFor="auth-password">
-              Password
-            </label>
+            <div className="auth-field-row">
+              <label className="auth-field-label" htmlFor="auth-password">
+                Password
+              </label>
+              {mode === 'signin' ? (
+                <button
+                  className="link-button auth-forgot"
+                  type="button"
+                  disabled={submitting}
+                  onClick={() => goTo('forgot')}
+                >
+                  Forgot password?
+                </button>
+              ) : null}
+            </div>
             <input
               id="auth-password"
               className="field"

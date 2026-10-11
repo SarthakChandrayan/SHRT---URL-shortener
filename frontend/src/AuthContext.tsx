@@ -19,6 +19,11 @@ export type EmailAuthResult =
   | { kind: 'needs-verification' }
   | { kind: 'error'; message: string }
 
+export type ResetPasswordResult =
+  | { kind: 'signed-in' }
+  | { kind: 'reset' }
+  | { kind: 'error'; message: string }
+
 export type VerifyEmailResult =
   | { kind: 'signed-in' }
   | { kind: 'verified' }
@@ -37,6 +42,8 @@ type AuthContextValue = {
   signInWithEmail: (email: string, password: string) => Promise<EmailAuthResult>
   verifyEmailOtp: (email: string, otp: string) => Promise<VerifyEmailResult>
   resendVerificationEmail: (email: string) => Promise<string | null>
+  requestPasswordReset: (email: string) => Promise<string | null>
+  resetPassword: (email: string, otp: string, password: string) => Promise<ResetPasswordResult>
   signInWithGoogle: () => Promise<string | null>
   signOut: () => Promise<void>
 }
@@ -159,6 +166,44 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  async function requestPasswordReset(email: string) {
+    try {
+      const result = await authClient.emailOtp.sendVerificationOtp({
+        email: email.trim(),
+        type: 'forget-password',
+      })
+      if (result.error) {
+        return errorMessage(result.error, 'Could not send a reset code')
+      }
+      return null
+    } catch {
+      return 'Could not reach the sign-in service'
+    }
+  }
+
+  async function resetPassword(
+    email: string,
+    otp: string,
+    password: string,
+  ): Promise<ResetPasswordResult> {
+    try {
+      const result = await authClient.emailOtp.resetPassword({
+        email: email.trim(),
+        otp,
+        password,
+      })
+      if (result.error) {
+        return { kind: 'error', message: errorMessage(result.error, 'Could not reset your password') }
+      }
+    } catch {
+      return { kind: 'error', message: 'Could not reach the sign-in service' }
+    }
+
+    // Resetting also verifies the email, so signing straight in should work.
+    const signIn = await signInWithEmail(email.trim(), password)
+    return signIn.kind === 'ok' ? { kind: 'signed-in' } : { kind: 'reset' }
+  }
+
   async function signInWithGoogle() {
     try {
       await authClient.signIn.social({
@@ -190,6 +235,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         signInWithEmail,
         verifyEmailOtp,
         resendVerificationEmail,
+        requestPasswordReset,
+        resetPassword,
         signInWithGoogle,
         signOut,
       }}
