@@ -14,6 +14,11 @@ const QR_OPTIONS = {
   color: { dark: '#041016', light: '#ffffff' },
 } as const
 
+/** Scans carry `?s=qr` so analytics can tell them apart from link clicks. */
+function qrTarget(value: string): string {
+  return `${value}${value.includes('?') ? '&' : '?'}s=qr`
+}
+
 /** Renders a QR code for `value`, loading the encoder only when needed. */
 export function QrCode({ value, name, size = 176 }: QrCodeProps) {
   const [svg, setSvg] = useState<string | null>(null)
@@ -25,7 +30,7 @@ export function QrCode({ value, name, size = 176 }: QrCodeProps) {
     setFailed(false)
 
     import('qrcode')
-      .then((qr) => qr.toString(value, { ...QR_OPTIONS, type: 'svg' }))
+      .then((qr) => qr.toString(qrTarget(value), { ...QR_OPTIONS, type: 'svg' }))
       .then((markup) => {
         if (!cancelled) {
           setSvg(markup)
@@ -44,7 +49,7 @@ export function QrCode({ value, name, size = 176 }: QrCodeProps) {
 
   async function download() {
     const qr = await import('qrcode')
-    const dataUrl = await qr.toDataURL(value, { ...QR_OPTIONS, width: 1024 })
+    const dataUrl = await qr.toDataURL(qrTarget(value), { ...QR_OPTIONS, width: 1024 })
     const link = document.createElement('a')
     link.href = dataUrl
     link.download = `shrt-${name}.png`

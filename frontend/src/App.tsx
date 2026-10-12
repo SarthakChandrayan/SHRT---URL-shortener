@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
 import { takeOAuthError } from './auth.ts'
 import { AuthOverlay } from './AuthOverlay.tsx'
 import { useAuth } from './AuthContext.tsx'
@@ -8,11 +8,14 @@ import { clearPending } from './pending.ts'
 import { ProfileOverlay } from './ProfileOverlay.tsx'
 import { Settings } from './Settings.tsx'
 
-type Screen = 'home' | 'dashboard' | 'settings' | 'notfound'
+const AnalyticsPage = lazy(() => import('./AnalyticsPage.tsx'))
+
+type Screen = 'home' | 'dashboard' | 'analytics' | 'settings' | 'notfound'
 
 const TITLES: Record<Screen, string> = {
   home: 'SHRT — Short links with analytics',
-  dashboard: 'Dashboard · SHRT',
+  dashboard: 'Your links · SHRT',
+  analytics: 'Analytics · SHRT',
   settings: 'Settings · SHRT',
   notfound: 'Page not found · SHRT',
 }
@@ -26,6 +29,10 @@ function readScreen(): Screen {
 
   if (path === '/dashboard') {
     return 'dashboard'
+  }
+
+  if (path === '/analytics') {
+    return 'analytics'
   }
 
   return path === '/settings' ? 'settings' : 'notfound'
@@ -70,7 +77,7 @@ function App() {
   }, [])
 
   function navLink(target: Exclude<Screen, 'notfound'>, label: string) {
-    const href = target === 'dashboard' ? '/dashboard' : '/'
+    const href = target === 'home' ? '/' : `/${target}`
 
     return (
       <a
@@ -117,7 +124,8 @@ function App() {
           </a>
           <nav className="nav" aria-label="Primary">
             {navLink('home', 'Shorten')}
-            {navLink('dashboard', 'Dashboard')}
+            {navLink('dashboard', 'Links')}
+            {navLink('analytics', 'Analytics')}
           </nav>
           <div className="auth-controls">
             {status === 'loading' ? (
@@ -148,6 +156,10 @@ function App() {
       <main className="main" id="main">
         {screen === 'dashboard' ? (
           <Dashboard onCreate={() => go('home')} onSignIn={() => setAuthOpen(true)} />
+        ) : screen === 'analytics' ? (
+          <Suspense fallback={<div className="dash skeleton skeleton-chart" />}>
+            <AnalyticsPage onSignIn={() => setAuthOpen(true)} onCreate={() => go('home')} />
+          </Suspense>
         ) : screen === 'settings' ? (
           <Settings onSignIn={() => setAuthOpen(true)} onDeleted={() => go('home')} />
         ) : screen === 'notfound' ? (

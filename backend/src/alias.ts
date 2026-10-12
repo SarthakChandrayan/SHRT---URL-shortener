@@ -13,6 +13,7 @@ export const SHORT_CODE_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const RESERVED_ALIASES = new Set([
   "about",
   "admin",
+  "analytics",
   "api",
   "app",
   "assets",

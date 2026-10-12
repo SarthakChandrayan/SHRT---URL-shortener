@@ -44,6 +44,10 @@ model Click {
   os         String   @default("unknown")
   referrer   String   @default("direct")
   country    String   @default("unknown")
+  /// Daily-rotating salted hash of IP + user agent, for unique visitor counts. Never reversible to an IP.
+  visitorHash String?
+  /// "qr" for QR scans, or the visitor's utm_source; null for plain clicks.
+  source     String?
   url        Url      @relation(fields: [urlId], references: [id], onDelete: Cascade)
 
   @@index([urlId, clickedAt])

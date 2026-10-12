@@ -2,6 +2,7 @@ import "./env.js";
 import { ipKeyGenerator, rateLimit } from "express-rate-limit";
 import { sendError } from "./errors.js";
 import { sendTooManyAttempts } from "./redirect.js";
+import { userAgentKey } from "./traffic.js";
 
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
@@ -61,10 +62,15 @@ export const createUrlLimiter = rateLimit({
   },
 });
 
-/** Above this, skip Click inserts but still 302. */
+/**
+ * Above this, skip Click inserts but still 302. Keyed by IP + browser so
+ * many people behind one carrier/office IP (CGNAT) aren't counted as one.
+ */
 export const redirectClickLimiter = rateLimit({
   windowMs: redirectWindowMs,
   limit: redirectClickMax,
+  keyGenerator: (req) =>
+    `${ipKeyGenerator(req.ip ?? "")}:${userAgentKey(req.get("user-agent"))}`,
   standardHeaders: false,
   legacyHeaders: false,
   handler: (req, _res, next) => {

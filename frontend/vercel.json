@@ -9,6 +9,10 @@
       "destination": "/index.html"
     },
     {
+      "source": "/analytics",
+      "destination": "/index.html"
+    },
+    {
       "source": "/settings",
       "destination": "/index.html"
     },

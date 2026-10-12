@@ -1,5 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
-import { downloadBlob, getShortUrl, listUrls, type ClickBreakdown, type UrlStats } from './api.ts'
+import { downloadBlob, getShortUrl, listUrls, type UrlStats } from './api.ts'
+import { Sparkline } from './AnalyticsWidgets.tsx'
 import { useAuth } from './AuthContext.tsx'
 import { copyText } from './copy.ts'
 import { displayHost, formatWhen, isExpired, plural, relativeTime } from './format.ts'
@@ -21,7 +22,7 @@ import {
 import { DeleteLinkModal, EditLinkModal, QrModal } from './LinkModals.tsx'
 import { useToast } from './Toast.tsx'
 
-const ClicksOverTime = lazy(() => import('./ClicksOverTime.tsx'))
+const LinkAnalytics = lazy(() => import('./LinkAnalytics.tsx'))
 
 type LoadState =
   | { kind: 'loading' }
@@ -498,6 +499,7 @@ function LinkCard({ url, open, copied, onToggle, onCopy, onDialog }: LinkCardPro
           ) : null}
         </div>
         <div className="link-aside">
+          <Sparkline values={url.recentClicks} label={`/${url.shortCode}`} />
           <button
             className="click-count"
             type="button"
@@ -573,22 +575,8 @@ function LinkCard({ url, open, copied, onToggle, onCopy, onDialog }: LinkCardPro
       {open ? (
         <div className="link-details" id={detailsId}>
           <Suspense fallback={<div className="skeleton skeleton-chart" />}>
-            <ClicksOverTime urlId={url.id} />
+            <LinkAnalytics urlId={url.id} />
           </Suspense>
-          {url.clickCount > 0 ? (
-            <div className="breakdowns">
-              <BreakdownCard label="Browsers" items={url.analytics.browsers} total={url.clickCount} />
-              <BreakdownCard
-                label="Operating systems"
-                items={url.analytics.operatingSystems}
-                total={url.clickCount}
-              />
-              <BreakdownCard label="Referrers" items={url.analytics.referrers} total={url.clickCount} />
-              <BreakdownCard label="Countries" items={url.analytics.countries} total={url.clickCount} />
-            </div>
-          ) : (
-            <p className="status">No clicks yet. Share the link to start collecting analytics.</p>
-          )}
           <p className="link-detail-meta">
             Created {formatWhen(url.createdAt)} ·{' '}
             {url.expiresAt
@@ -601,76 +589,9 @@ function LinkCard({ url, open, copied, onToggle, onCopy, onDialog }: LinkCardPro
   )
 }
 
-const BREAKDOWN_LIMIT = 5
-
-function BreakdownCard({
-  label,
-  items,
-  total,
-}: {
-  label: string
-  items: ClickBreakdown[]
-  total: number
-}) {
-  if (items.length === 0) {
-    return null
-  }
-
-  const shown = items.slice(0, BREAKDOWN_LIMIT)
-  const rest = items.slice(BREAKDOWN_LIMIT).reduce((sum, item) => sum + item.count, 0)
-
-  return (
-    <div className="breakdown">
-      <p className="breakdown-title">{label}</p>
-      <ul className="breakdown-list">
-        {shown.map((item) => (
-          <BreakdownRow key={item.label} label={displayLabel(item.label)} count={item.count} total={total} />
-        ))}
-        {rest > 0 ? <BreakdownRow label="Other" count={rest} total={total} /> : null}
-      </ul>
-    </div>
-  )
-}
-
-function BreakdownRow({ label, count, total }: { label: string; count: number; total: number }) {
-  const share = total > 0 ? Math.round((count / total) * 100) : 0
-
-  return (
-    <li className="breakdown-row">
-      <span className="breakdown-bar" style={{ width: `${share}%` }} aria-hidden="true" />
-      <span className="breakdown-label" title={label}>
-        {label}
-      </span>
-      <span className="breakdown-count">
-        {count.toLocaleString()} <span className="breakdown-share">{share}%</span>
-      </span>
-    </li>
-  )
-}
-
 /** Expired, or out of allowed clicks — either way, visitors can't get through. */
 function isInactive(url: UrlStats): boolean {
   return isExpired(url.expiresAt) || (url.maxClicks !== null && url.clickCount >= url.maxClicks)
-}
-
-function displayLabel(label: string): string {
-  if (label === 'unknown') {
-    return 'Unidentified'
-  }
-
-  if (label === 'local') {
-    return 'This device'
-  }
-
-  if (label === 'direct') {
-    return 'Direct / none'
-  }
-
-  if (label === 'desktop' || label === 'mobile' || label === 'tablet') {
-    return label[0].toUpperCase() + label.slice(1)
-  }
-
-  return label
 }
 
 function DashSkeleton() {

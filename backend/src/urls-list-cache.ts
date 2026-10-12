@@ -1,16 +1,18 @@
 const TTL_MS = 10_000;
 
-type CacheEntry<T> = {
+type CacheEntry = {
   expiresAt: number;
-  value: T;
+  timezone: string;
+  value: unknown;
 };
 
-const entries = new Map<string, CacheEntry<unknown>>();
+// One entry per user; the list's sparklines depend on the viewer's timezone.
+const entries = new Map<string, CacheEntry>();
 
-export function getCachedUrlList<T>(userId: string): T | undefined {
+export function getCachedUrlList<T>(userId: string, timezone: string): T | undefined {
   const entry = entries.get(userId);
 
-  if (!entry) {
+  if (!entry || entry.timezone !== timezone) {
     return undefined;
   }
 
@@ -22,9 +24,10 @@ export function getCachedUrlList<T>(userId: string): T | undefined {
   return entry.value as T;
 }
 
-export function setCachedUrlList<T>(userId: string, value: T): void {
+export function setCachedUrlList<T>(userId: string, timezone: string, value: T): void {
   entries.set(userId, {
     expiresAt: Date.now() + TTL_MS,
+    timezone,
     value,
   });
 }

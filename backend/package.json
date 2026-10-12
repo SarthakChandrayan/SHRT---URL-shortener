@@ -10,7 +10,7 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "test": "tsx --test src/validation.test.ts src/link-options.test.ts",
+    "test": "tsx --test src/validation.test.ts src/link-options.test.ts src/analytics.test.ts",
     "db:migrate": "prisma migrate deploy"
   },
   "dependencies": {
@@ -24,6 +24,7 @@
     "jose": "^6.2.12"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/node": "^26.5.1",

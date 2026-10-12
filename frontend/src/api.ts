@@ -16,35 +16,67 @@ export type ClickBreakdown = {
   count: number
 }
 
-export type UrlAnalytics = {
-  devices: ClickBreakdown[]
-  browsers: ClickBreakdown[]
-  operatingSystems: ClickBreakdown[]
-  referrers: ClickBreakdown[]
-  countries: ClickBreakdown[]
-}
-
 export type UrlStats = CreatedUrl & {
   clickCount: number
   lastClickedAt: string | null
-  analytics: UrlAnalytics
+  /** Daily clicks for the last 14 days (oldest first), in the viewer's timezone. */
+  recentClicks: number[]
 }
 
-export type DailyClicks = {
+export type DailyPoint = {
   date: string
   clicks: number
+  visitors: number
 }
 
-export type DeviceClicks = {
-  deviceType: string
+export type Breakdowns = {
+  devices: ClickBreakdown[]
+  browsers: ClickBreakdown[]
+  operatingSystems: ClickBreakdown[]
+  countries: ClickBreakdown[]
+  sources: ClickBreakdown[]
+}
+
+export type HeatmapCell = {
+  /** 0 = Monday … 6 = Sunday, in the viewer's timezone. */
+  day: number
+  hour: number
   clicks: number
 }
 
-export type UrlClicksOverTime = {
+export type AnalyticsReport = {
   startDate: string
   endDate: string
-  data: DailyClicks[]
-  devices: DeviceClicks[]
+  timezone: string
+  totals: { clicks: number; visitors: number }
+  previous: { startDate: string; endDate: string; clicks: number; visitors: number }
+  series: DailyPoint[]
+  breakdowns: Breakdowns
+  heatmap: HeatmapCell[]
+}
+
+export type TopLink = {
+  id: string
+  shortCode: string
+  originalUrl: string
+  clicks: number
+  visitors: number
+}
+
+export type OverviewReport = AnalyticsReport & {
+  links: { total: number; createdInRange: number }
+  topLinks: TopLink[]
+}
+
+export type DateRange = { startDate: string; endDate: string }
+
+/** The browser's IANA timezone, so days and hours match the viewer's clock. */
+export function viewerTimezone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+  } catch {
+    return 'UTC'
+  }
 }
 
 export class ApiError extends Error {
@@ -134,10 +166,10 @@ export function listUrls(): Promise<UrlStats[]> {
 
   listUrlsInflight = (async () => {
     try {
-      const payload = await requestJson('/api/urls', {
-        cache: 'no-store',
-        headers: await authHeader(),
-      })
+      const payload = await requestJson(
+        `/api/urls?tz=${encodeURIComponent(viewerTimezone())}`,
+        { cache: 'no-store', headers: await authHeader() },
+      )
 
       if (!Array.isArray(payload) || !payload.every(isUrlStats)) {
         throw new ApiError('Unexpected response from the server')
@@ -152,26 +184,49 @@ export function listUrls(): Promise<UrlStats[]> {
   return listUrlsInflight
 }
 
+function rangeQuery(range: DateRange): string {
+  const params = new URLSearchParams({
+    startDate: range.startDate,
+    endDate: range.endDate,
+    tz: viewerTimezone(),
+  })
+  return `?${params.toString()}`
+}
+
 export async function getUrlAnalytics(
   id: string,
-  range: { startDate: string; endDate: string } | null,
+  range: DateRange,
   init?: RequestInit,
-): Promise<UrlClicksOverTime> {
+): Promise<AnalyticsReport> {
   const { headers, ...rest } = init ?? {}
-  const query = range
-    ? `?startDate=${encodeURIComponent(range.startDate)}&endDate=${encodeURIComponent(range.endDate)}`
-    : ''
-  const payload = await requestJson(`/api/urls/${encodeURIComponent(id)}/analytics${query}`, {
+  const payload = await requestJson(
+    `/api/urls/${encodeURIComponent(id)}/analytics${rangeQuery(range)}`,
+    { cache: 'no-store', ...rest, headers: { ...(await authHeader()), ...headers } },
+  )
+
+  if (!isAnalyticsReport(payload)) {
+    throw new ApiError('Unexpected response from the server')
+  }
+
+  return payload
+}
+
+export async function getOverview(range: DateRange, init?: RequestInit): Promise<OverviewReport> {
+  const { headers, ...rest } = init ?? {}
+  const payload = await requestJson(`/api/urls/overview${rangeQuery(range)}`, {
     cache: 'no-store',
     ...rest,
     headers: { ...(await authHeader()), ...headers },
   })
 
-  if (!isUrlClicksOverTime(payload)) {
+  if (
+    !isAnalyticsReport(payload) ||
+    !Array.isArray((payload as Partial<OverviewReport>).topLinks)
+  ) {
     throw new ApiError('Unexpected response from the server')
   }
 
-  return payload
+  return payload as OverviewReport
 }
 
 export type UrlPatch = {
@@ -397,6 +452,13 @@ function withLinkDefaults<T extends CreatedUrl>(url: T): T {
     tags: Array.isArray(url.tags) ? url.tags : [],
     maxClicks: typeof url.maxClicks === 'number' ? url.maxClicks : null,
     hasPassword: url.hasPassword === true,
+    ...('clickCount' in url
+      ? {
+          recentClicks: Array.isArray((url as Partial<UrlStats>).recentClicks)
+            ? (url as Partial<UrlStats>).recentClicks
+            : [],
+        }
+      : {}),
   }
 }
 
@@ -423,59 +485,30 @@ function isUrlStats(payload: unknown): payload is UrlStats {
 
   return (
     typeof record.clickCount === 'number' &&
-    (record.lastClickedAt === null || typeof record.lastClickedAt === 'string') &&
-    isUrlAnalytics(record.analytics)
+    (record.lastClickedAt === null || typeof record.lastClickedAt === 'string')
   )
 }
 
-function isUrlAnalytics(value: unknown): value is UrlAnalytics {
+function isAnalyticsReport(value: unknown): value is AnalyticsReport {
   if (value === null || typeof value !== 'object') {
     return false
   }
 
   const record = value as Record<string, unknown>
-
-  return (
-    isBreakdownList(record.devices) &&
-    isBreakdownList(record.browsers) &&
-    isBreakdownList(record.operatingSystems) &&
-    isBreakdownList(record.referrers) &&
-    isBreakdownList(record.countries)
-  )
-}
-
-function isUrlClicksOverTime(value: unknown): value is UrlClicksOverTime {
-  if (value === null || typeof value !== 'object') {
-    return false
-  }
-
-  const record = value as Record<string, unknown>
+  const breakdowns = record.breakdowns as Record<string, unknown> | undefined
+  const totals = record.totals as Record<string, unknown> | undefined
 
   return (
     typeof record.startDate === 'string' &&
     typeof record.endDate === 'string' &&
-    Array.isArray(record.data) &&
-    record.data.every(isDailyClicks) &&
-    Array.isArray(record.devices) &&
-    record.devices.every(isDeviceClicks)
-  )
-}
-
-function isDailyClicks(value: unknown): value is DailyClicks {
-  return (
-    value !== null &&
-    typeof value === 'object' &&
-    typeof (value as DailyClicks).date === 'string' &&
-    typeof (value as DailyClicks).clicks === 'number'
-  )
-}
-
-function isDeviceClicks(value: unknown): value is DeviceClicks {
-  return (
-    value !== null &&
-    typeof value === 'object' &&
-    typeof (value as DeviceClicks).deviceType === 'string' &&
-    typeof (value as DeviceClicks).clicks === 'number'
+    typeof totals?.clicks === 'number' &&
+    typeof totals?.visitors === 'number' &&
+    Array.isArray(record.series) &&
+    Array.isArray(record.heatmap) &&
+    breakdowns !== undefined &&
+    ['devices', 'browsers', 'operatingSystems', 'countries', 'sources'].every((key) =>
+      isBreakdownList(breakdowns[key]),
+    )
   )
 }
 

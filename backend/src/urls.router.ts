@@ -1,8 +1,16 @@
 import { Prisma } from "@prisma/client";
 import { Router } from "express";
 import { parseAlias } from "./alias.js";
+import {
+  addDays,
+  getAnalytics,
+  buildLinkListQuery,
+  getOverview,
+  parseAnalyticsRange,
+  todayIn,
+  parseTimezone,
+} from "./analytics.js";
 import { requireAuth } from "./auth.js";
-import type { ClickBreakdown } from "./click-analytics.js";
 import { HttpError, sendError } from "./errors.js";
 import { parseExpiresAt } from "./expires-at.js";
 import { parseOriginalUrl } from "./original-url.js";
@@ -42,9 +50,10 @@ export const urlsRouter = Router();
 
 urlsRouter.get("/", requireAuth, async (req, res, next) => {
   const userId = req.userId!;
+  const timezone = parseTimezone(req.query.tz) ?? "UTC";
 
   try {
-    const cached = getCachedUrlList(userId);
+    const cached = getCachedUrlList(userId, timezone);
 
     if (cached !== undefined) {
       res.set("Cache-Control", "no-store");
@@ -52,11 +61,29 @@ urlsRouter.get("/", requireAuth, async (req, res, next) => {
       return;
     }
 
-    const payload = await listOwnedUrlStats(userId);
+    const payload = await listOwnedUrlStats(userId, timezone);
 
-    setCachedUrlList(userId, payload);
+    setCachedUrlList(userId, timezone, payload);
     res.set("Cache-Control", "no-store");
     res.json(payload);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/** Account-wide analytics across all of the user's links. */
+urlsRouter.get("/overview", requireAuth, async (req, res, next) => {
+  const range = parseAnalyticsRange(req.query);
+
+  if (!range.ok) {
+    sendError(res, 400, range.error);
+    return;
+  }
+
+  try {
+    const overview = await getOverview(req.userId!, range.range);
+    res.set("Cache-Control", "no-store");
+    res.json(overview);
   } catch (error) {
     next(error);
   }
@@ -169,18 +196,9 @@ urlsRouter.get("/:id/analytics", requireAuth, async (req, res, next) => {
       return;
     }
 
-    const [data, devices] = await Promise.all([
-      listUrlClicksByDay(existing.id, range.startDate, range.endDate),
-      listUrlClicksByDevice(existing.id, range.startDate, range.endDate),
-    ]);
-
+    const analytics = await getAnalytics({ kind: "url", urlId: existing.id }, range.range);
     res.set("Cache-Control", "no-store");
-    res.json({
-      startDate: range.startDate,
-      endDate: range.endDate,
-      data,
-      devices,
-    });
+    res.json(analytics);
   } catch (error) {
     next(error);
   }
@@ -312,196 +330,7 @@ urlsRouter.delete("/:id", requireAuth, async (req, res, next) => {
   }
 });
 
-const ISO_DAY = /^(\d{4})-(\d{2})-(\d{2})$/;
-const DEFAULT_RANGE_DAYS = 7;
-const MAX_RANGE_DAYS = 90;
-
-type AnalyticsRange =
-  | { ok: true; startDate: string; endDate: string }
-  | { ok: false; error: string };
-
-function utcDayString(date: Date): string {
-  return date.toISOString().slice(0, 10);
-}
-
-function parseIsoDay(value: unknown): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const match = ISO_DAY.exec(value.trim());
-
-  if (!match) {
-    return null;
-  }
-
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  const utc = new Date(Date.UTC(year, month - 1, day));
-
-  if (
-    utc.getUTCFullYear() !== year ||
-    utc.getUTCMonth() !== month - 1 ||
-    utc.getUTCDate() !== day
-  ) {
-    return null;
-  }
-
-  return `${match[1]}-${match[2]}-${match[3]}`;
-}
-
-function addUtcDays(isoDay: string, days: number): string {
-  const [year, month, day] = isoDay.split("-").map(Number);
-  const date = new Date(Date.UTC(year, month - 1, day));
-  date.setUTCDate(date.getUTCDate() + days);
-  return utcDayString(date);
-}
-
-function inclusiveDayCount(startDate: string, endDate: string): number {
-  const start = Date.parse(`${startDate}T00:00:00.000Z`);
-  const end = Date.parse(`${endDate}T00:00:00.000Z`);
-  return Math.floor((end - start) / 86_400_000) + 1;
-}
-
-function parseAnalyticsRange(query: {
-  startDate?: unknown;
-  endDate?: unknown;
-}): AnalyticsRange {
-  if (Array.isArray(query.startDate) || Array.isArray(query.endDate)) {
-    return { ok: false, error: "startDate and endDate must be YYYY-MM-DD" };
-  }
-
-  const today = utcDayString(new Date());
-  let endDate: string;
-  let startDate: string;
-
-  if (query.endDate === undefined || query.endDate === "") {
-    endDate = today;
-  } else {
-    const parsed = parseIsoDay(query.endDate);
-
-    if (!parsed) {
-      return { ok: false, error: "endDate must be YYYY-MM-DD" };
-    }
-
-    endDate = parsed;
-  }
-
-  if (query.startDate === undefined || query.startDate === "") {
-    startDate = addUtcDays(endDate, -(DEFAULT_RANGE_DAYS - 1));
-  } else {
-    const parsed = parseIsoDay(query.startDate);
-
-    if (!parsed) {
-      return { ok: false, error: "startDate must be YYYY-MM-DD" };
-    }
-
-    startDate = parsed;
-  }
-
-  if (startDate > endDate) {
-    return { ok: false, error: "startDate must be on or before endDate" };
-  }
-
-  if (inclusiveDayCount(startDate, endDate) > MAX_RANGE_DAYS) {
-    return {
-      ok: false,
-      error: `Date range must be ${MAX_RANGE_DAYS} days or fewer`,
-    };
-  }
-
-  return { ok: true, startDate, endDate };
-}
-
-type DailyClickRow = {
-  date: string;
-  clicks: number;
-};
-
-async function listUrlClicksByDay(
-  urlId: string,
-  startDate: string,
-  endDate: string,
-): Promise<DailyClickRow[]> {
-  const rows = await prisma.$queryRaw<DailyClickRow[]>(Prisma.sql`
-    WITH days AS (
-      SELECT generate_series(
-        ${startDate}::date,
-        ${endDate}::date,
-        INTERVAL '1 day'
-      )::date AS date
-    ),
-    counts AS (
-      SELECT
-        "clickedAt"::date AS date,
-        COUNT(*)::int AS clicks
-      FROM "Click"
-      WHERE "urlId" = ${urlId}
-        AND "clickedAt" >= ${startDate}::date
-        AND "clickedAt" < (${endDate}::date + INTERVAL '1 day')
-      GROUP BY 1
-    )
-    SELECT
-      to_char(days.date, 'YYYY-MM-DD') AS date,
-      COALESCE(counts.clicks, 0)::int AS clicks
-    FROM days
-    LEFT JOIN counts ON counts.date = days.date
-    ORDER BY days.date
-  `);
-
-  return rows.map((row) => ({
-    date: row.date,
-    clicks: Number(row.clicks),
-  }));
-}
-
-type DeviceClickRow = {
-  deviceType: string;
-  clicks: number;
-};
-
-async function listUrlClicksByDevice(
-  urlId: string,
-  startDate: string,
-  endDate: string,
-): Promise<DeviceClickRow[]> {
-  const rows = await prisma.$queryRaw<DeviceClickRow[]>(Prisma.sql`
-    WITH categories AS (
-      SELECT unnest(ARRAY['desktop', 'mobile', 'tablet', 'unknown']) AS "deviceType"
-    ),
-    counts AS (
-      SELECT
-        CASE
-          WHEN "deviceType" IN ('desktop', 'mobile', 'tablet') THEN "deviceType"
-          ELSE 'unknown'
-        END AS "deviceType",
-        COUNT(*)::int AS clicks
-      FROM "Click"
-      WHERE "urlId" = ${urlId}
-        AND "clickedAt" >= ${startDate}::date
-        AND "clickedAt" < (${endDate}::date + INTERVAL '1 day')
-      GROUP BY 1
-    )
-    SELECT
-      categories."deviceType",
-      COALESCE(counts.clicks, 0)::int AS clicks
-    FROM categories
-    LEFT JOIN counts ON counts."deviceType" = categories."deviceType"
-    ORDER BY
-      CASE categories."deviceType"
-        WHEN 'desktop' THEN 0
-        WHEN 'mobile' THEN 1
-        WHEN 'tablet' THEN 2
-        ELSE 3
-      END
-  `);
-
-  return rows.map((row) => ({
-    deviceType: row.deviceType,
-    clicks: Number(row.clicks),
-  }));
-}
+const SPARKLINE_DAYS = 14;
 
 type UrlStatsRow = {
   id: string;
@@ -514,152 +343,21 @@ type UrlStatsRow = {
   hasPassword: boolean;
   clickCount: number;
   lastClickedAt: Date | null;
-  devices: ClickBreakdown[] | null;
-  browsers: ClickBreakdown[] | null;
-  operatingSystems: ClickBreakdown[] | null;
-  referrers: ClickBreakdown[] | null;
-  countries: ClickBreakdown[] | null;
+  recentClicks: number[] | null;
 };
 
-async function listOwnedUrlStats(userId: string) {
-  const urls = await prisma.$queryRaw<UrlStatsRow[]>(Prisma.sql`
-    WITH user_urls AS (
-      SELECT
-        id,
-        "originalUrl",
-        "shortCode",
-        "createdAt",
-        "expiresAt",
-        tags,
-        "maxClicks",
-        "passwordHash" IS NOT NULL AS "hasPassword"
-      FROM "Url"
-      WHERE "userId" = ${userId}
-    ),
-    click_stats AS (
-      SELECT
-        "urlId",
-        COUNT(*)::int AS "clickCount",
-        MAX("clickedAt") AS "lastClickedAt"
-      FROM "Click"
-      WHERE "urlId" IN (SELECT id FROM user_urls)
-      GROUP BY "urlId"
-    ),
-    devices AS (
-      SELECT
-        "urlId",
-        json_agg(
-          json_build_object('label', label, 'count', count)
-          ORDER BY count DESC, lower(label), label
-        ) AS devices
-      FROM (
-        SELECT
-          "urlId",
-          "deviceType" AS label,
-          COUNT(*)::int AS count
-        FROM "Click"
-        WHERE "urlId" IN (SELECT id FROM user_urls)
-        GROUP BY "urlId", "deviceType"
-      ) device_counts
-      GROUP BY "urlId"
-    ),
-    browsers AS (
-      SELECT
-        "urlId",
-        json_agg(
-          json_build_object('label', label, 'count', count)
-          ORDER BY count DESC, lower(label), label
-        ) AS browsers
-      FROM (
-        SELECT
-          "urlId",
-          browser AS label,
-          COUNT(*)::int AS count
-        FROM "Click"
-        WHERE "urlId" IN (SELECT id FROM user_urls)
-        GROUP BY "urlId", browser
-      ) browser_counts
-      GROUP BY "urlId"
-    ),
-    operating_systems AS (
-      SELECT
-        "urlId",
-        json_agg(
-          json_build_object('label', label, 'count', count)
-          ORDER BY count DESC, lower(label), label
-        ) AS "operatingSystems"
-      FROM (
-        SELECT
-          "urlId",
-          os AS label,
-          COUNT(*)::int AS count
-        FROM "Click"
-        WHERE "urlId" IN (SELECT id FROM user_urls)
-        GROUP BY "urlId", os
-      ) os_counts
-      GROUP BY "urlId"
-    ),
-    referrers AS (
-      SELECT
-        "urlId",
-        json_agg(
-          json_build_object('label', label, 'count', count)
-          ORDER BY count DESC, lower(label), label
-        ) AS referrers
-      FROM (
-        SELECT
-          "urlId",
-          referrer AS label,
-          COUNT(*)::int AS count
-        FROM "Click"
-        WHERE "urlId" IN (SELECT id FROM user_urls)
-        GROUP BY "urlId", referrer
-      ) referrer_counts
-      GROUP BY "urlId"
-    ),
-    countries AS (
-      SELECT
-        "urlId",
-        json_agg(
-          json_build_object('label', label, 'count', count)
-          ORDER BY count DESC, lower(label), label
-        ) AS countries
-      FROM (
-        SELECT
-          "urlId",
-          country AS label,
-          COUNT(*)::int AS count
-        FROM "Click"
-        WHERE "urlId" IN (SELECT id FROM user_urls)
-        GROUP BY "urlId", country
-      ) country_counts
-      GROUP BY "urlId"
-    )
-    SELECT
-      u.id,
-      u."originalUrl",
-      u."shortCode",
-      u."createdAt",
-      u."expiresAt",
-      u.tags,
-      u."maxClicks",
-      u."hasPassword",
-      COALESCE(cs."clickCount", 0) AS "clickCount",
-      cs."lastClickedAt",
-      COALESCE(d.devices, '[]'::json) AS devices,
-      COALESCE(b.browsers, '[]'::json) AS browsers,
-      COALESCE(os."operatingSystems", '[]'::json) AS "operatingSystems",
-      COALESCE(r.referrers, '[]'::json) AS referrers,
-      COALESCE(c.countries, '[]'::json) AS countries
-    FROM user_urls u
-    LEFT JOIN click_stats cs ON cs."urlId" = u.id
-    LEFT JOIN devices d ON d."urlId" = u.id
-    LEFT JOIN browsers b ON b."urlId" = u.id
-    LEFT JOIN operating_systems os ON os."urlId" = u.id
-    LEFT JOIN referrers r ON r."urlId" = u.id
-    LEFT JOIN countries c ON c."urlId" = u.id
-    ORDER BY u."createdAt" DESC
-  `);
+/**
+ * The link list: settings, all-time click count, and a daily sparkline of
+ * the last 14 days in the viewer's timezone. Detailed breakdowns live in the
+ * per-link analytics endpoint, so this stays cheap as clicks grow.
+ */
+async function listOwnedUrlStats(userId: string, timezone: string) {
+  const endDate = todayIn(timezone);
+  const startDate = addDays(endDate, -(SPARKLINE_DAYS - 1));
+
+  const urls = await prisma.$queryRaw<UrlStatsRow[]>(
+    buildLinkListQuery(userId, startDate, endDate, timezone),
+  );
 
   return urls.map((url) => ({
     id: url.id,
@@ -672,13 +370,7 @@ async function listOwnedUrlStats(userId: string) {
     hasPassword: Boolean(url.hasPassword),
     clickCount: Number(url.clickCount),
     lastClickedAt: url.lastClickedAt,
-    analytics: {
-      devices: url.devices ?? [],
-      browsers: url.browsers ?? [],
-      operatingSystems: url.operatingSystems ?? [],
-      referrers: url.referrers ?? [],
-      countries: url.countries ?? [],
-    },
+    recentClicks: (url.recentClicks ?? []).map(Number),
   }));
 }
 

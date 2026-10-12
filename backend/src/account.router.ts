@@ -99,6 +99,7 @@ accountRouter.get("/export", async (req, res, next) => {
               os: true,
               referrer: true,
               country: true,
+              source: true,
             },
           },
         },

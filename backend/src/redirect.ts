@@ -4,6 +4,7 @@ import { parseClickRequest } from "./click-analytics.js";
 import { sendError } from "./errors.js";
 import { prisma } from "./prisma.js";
 import { verifyLinkPassword } from "./secrets.js";
+import { isBot, visitorHash, visitSource } from "./traffic.js";
 
 type Link = {
   id: string;
@@ -68,8 +69,10 @@ export async function redirectToOriginalUrl(
       return;
     }
 
-    await recordClick(req, resolved.link);
+    // Redirect first; the click is recorded afterwards so it never slows
+    // the visitor down.
     sendRedirect(res, resolved.link.originalUrl, 302);
+    void recordClick(req, resolved.link);
   } catch (error) {
     next(error);
   }
@@ -106,24 +109,31 @@ export async function unlockProtectedLink(
       return;
     }
 
-    await recordClick(req, link);
     // 303 so the browser follows with a GET instead of re-POSTing the form.
     sendRedirect(res, link.originalUrl, 303);
+    void recordClick(req, link);
   } catch (error) {
     next(error);
   }
 }
 
+/**
+ * Records a human click. Skips bots and link-preview fetchers, HEAD
+ * requests, and visitors over the per-IP soft rate limit.
+ */
 async function recordClick(req: Request, link: Link) {
-  if (req.skipClickTracking) {
+  const userAgent = req.get("user-agent");
+
+  if (req.skipClickTracking || req.method === "HEAD" || isBot(userAgent)) {
     return;
   }
 
   try {
+    const ip = req.ip ?? req.socket.remoteAddress;
     const analytics = await parseClickRequest(
-      req.get("user-agent"),
+      userAgent,
       req.get("referer"),
-      req.ip ?? req.socket.remoteAddress,
+      ip,
       (name) => req.get(name),
     );
 
@@ -135,6 +145,8 @@ async function recordClick(req: Request, link: Link) {
         os: analytics.os,
         referrer: analytics.referrer,
         country: analytics.country,
+        visitorHash: visitorHash(ip, userAgent),
+        source: visitSource(req.query as Record<string, unknown>),
       },
     });
   } catch (error) {
