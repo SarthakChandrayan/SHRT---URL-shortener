@@ -12,6 +12,7 @@ import { CopyIcon } from './icons.tsx'
 import { Modal } from './Modal.tsx'
 import { QrCode } from './QrCode.tsx'
 import { useToast } from './Toast.tsx'
+import { TagInput } from './TagInput.tsx'
 import { validateOriginalUrl } from './validate.ts'
 
 type LinkModalProps = {
@@ -32,6 +33,10 @@ export function EditLinkModal({
   const [destination, setDestination] = useState(link?.originalUrl ?? '')
   const [preset, setPreset] = useState<ExpiryPreset>(link?.expiresAt ? 'custom' : 'never')
   const [custom, setCustom] = useState(initialCustom)
+  const [tags, setTags] = useState<string[]>(link?.tags ?? [])
+  const [maxClicks, setMaxClicks] = useState(link?.maxClicks?.toString() ?? '')
+  const [newPassword, setNewPassword] = useState('')
+  const [removePassword, setRemovePassword] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
 
@@ -67,6 +72,30 @@ export function EditLinkModal({
         return
       }
       patch.expiresAt = expiry.expiresAt
+    }
+
+    if (tags.join(',') !== link.tags.join(',')) {
+      patch.tags = tags
+    }
+
+    const limitText = maxClicks.trim()
+    const limit = limitText ? Number(limitText) : null
+    if (limit !== null && (!Number.isInteger(limit) || limit < 1)) {
+      setError('Click limit must be a whole number of 1 or more')
+      return
+    }
+    if (limit !== link.maxClicks) {
+      patch.maxClicks = limit
+    }
+
+    if (removePassword) {
+      patch.password = null
+    } else if (newPassword) {
+      if (newPassword.length < 4) {
+        setError('Link password must be at least 4 characters')
+        return
+      }
+      patch.password = newPassword
     }
 
     if (Object.keys(patch).length === 0) {
@@ -148,6 +177,73 @@ export function EditLinkModal({
           <p className="option-status">
             Presets count from now. Expired links show visitors an “expired” page.
           </p>
+        </div>
+        <div className="option-pair">
+          <div className="auth-field">
+            <label className="auth-field-label" htmlFor="edit-max-clicks">
+              Click limit
+            </label>
+            <input
+              id="edit-max-clicks"
+              className="field"
+              type="number"
+              inputMode="numeric"
+              min={1}
+              step={1}
+              placeholder="Unlimited"
+              value={maxClicks}
+              disabled={saving}
+              onChange={(event) => {
+                setMaxClicks(event.target.value)
+                setError(null)
+              }}
+            />
+          </div>
+          <div className="auth-field">
+            <label className="auth-field-label" htmlFor="edit-password">
+              {link?.hasPassword ? 'New password' : 'Password'}
+            </label>
+            <input
+              id="edit-password"
+              className="field"
+              type="password"
+              autoComplete="new-password"
+              maxLength={128}
+              placeholder={link?.hasPassword ? 'Keep current' : 'No password'}
+              value={newPassword}
+              disabled={saving || removePassword}
+              onChange={(event) => {
+                setNewPassword(event.target.value)
+                setError(null)
+              }}
+            />
+          </div>
+        </div>
+        {link?.hasPassword ? (
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              checked={removePassword}
+              disabled={saving}
+              onChange={(event) => {
+                setRemovePassword(event.target.checked)
+                setNewPassword('')
+              }}
+            />
+            Remove password protection
+          </label>
+        ) : null}
+        {link && link.maxClicks !== null ? (
+          <p className="option-status">
+            {link.clickCount.toLocaleString()} of {link.maxClicks.toLocaleString()} visits used.
+            Raise the limit to reopen a link that’s reached it.
+          </p>
+        ) : null}
+        <div className="auth-field">
+          <label className="auth-field-label" htmlFor="edit-tags">
+            Tags
+          </label>
+          <TagInput id="edit-tags" tags={tags} onChange={setTags} disabled={saving} />
         </div>
         {error ? (
           <p className="status status-error" role="alert">

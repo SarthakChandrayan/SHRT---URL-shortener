@@ -25,8 +25,16 @@ import {
   QrIcon,
   ShareIcon,
 } from './icons.tsx'
-import { clearPending, readPending, savePending, type PendingShorten } from './pending.ts'
+import {
+  clearPending,
+  readPending,
+  savePending,
+  takePendingPassword,
+  type PendingShorten,
+} from './pending.ts'
 import { QrCode } from './QrCode.tsx'
+import { TagInput } from './TagInput.tsx'
+import { applyUtm, hasUtm, UTM_FIELDS, type UtmParams } from './utm.ts'
 import { useToast } from './Toast.tsx'
 import { ALIAS_MAX_LENGTH, validateAlias, validateOriginalUrl } from './validate.ts'
 
@@ -54,6 +62,11 @@ export function Home({ onRequireAuth, onOpenDashboard, onBusyChange }: HomeProps
   const [input, setInput] = useState('')
   const [alias, setAlias] = useState('')
   const [preset, setPreset] = useState<ExpiryPreset>('never')
+  const [tags, setTags] = useState<string[]>([])
+  const [maxClicks, setMaxClicks] = useState('')
+  const [linkPassword, setLinkPassword] = useState('')
+  const [utm, setUtm] = useState<UtmParams>({})
+  const [utmOpen, setUtmOpen] = useState(false)
   const [custom, setCustom] = useState('')
   const [optionsOpen, setOptionsOpen] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -128,7 +141,7 @@ export function Home({ onRequireAuth, onOpenDashboard, onBusyChange }: HomeProps
     }
   }, [alias, aliasError, status])
 
-  async function performShorten(pending: PendingShorten) {
+  async function performShorten(pending: PendingShorten, password: string | null) {
     const expiry = resolveExpiry(pending.preset, pending.custom)
 
     if ('error' in expiry) {
@@ -137,14 +150,25 @@ export function Home({ onRequireAuth, onOpenDashboard, onBusyChange }: HomeProps
       return
     }
 
+    const limit = parseLimit(pending.maxClicks)
+
+    if (limit === undefined) {
+      setOptionsOpen(true)
+      setView({ kind: 'form', error: 'Click limit must be a whole number of 1 or more' })
+      return
+    }
+
     submittingRef.current = true
     setLoading(true)
     setView({ kind: 'form', error: null })
 
     try {
-      const created = await createShortUrl(pending.url, {
+      const created = await createShortUrl(applyUtm(pending.url, pending.utm), {
         alias: pending.alias,
         expiresAt: expiry.expiresAt,
+        tags: pending.tags,
+        maxClicks: limit,
+        password,
       })
       setView({ kind: 'success', created, shortUrl: getShortUrl(created.shortCode) })
       setCopied(false)
@@ -184,17 +208,32 @@ export function Home({ onRequireAuth, onOpenDashboard, onBusyChange }: HomeProps
       return
     }
 
-    const pending: PendingShorten = { url, alias: alias.trim(), preset, custom }
+    if (linkPassword && linkPassword.length < 4) {
+      setOptionsOpen(true)
+      setView({ kind: 'form', error: 'Link password must be at least 4 characters' })
+      return
+    }
+
+    const pending: PendingShorten = {
+      url,
+      alias: alias.trim(),
+      preset,
+      custom,
+      tags,
+      maxClicks,
+      utm,
+      wantsPassword: Boolean(linkPassword),
+    }
 
     if (status !== 'authenticated') {
       // Hold the request until the visitor signs up/in, then resume it —
       // even across a full-page Google OAuth redirect.
-      savePending(pending)
+      savePending(pending, linkPassword || null)
       onRequireAuth()
       return
     }
 
-    await performShorten(pending)
+    await performShorten(pending, linkPassword || null)
   }
 
   useEffect(() => {
@@ -207,15 +246,40 @@ export function Home({ onRequireAuth, onOpenDashboard, onBusyChange }: HomeProps
       return
     }
 
+    const password = takePendingPassword()
     clearPending()
     setInput(pending.url)
     setAlias(pending.alias)
     setPreset(pending.preset)
     setCustom(pending.custom)
-    if (pending.alias || pending.preset !== 'never') {
+    setTags(pending.tags)
+    setMaxClicks(pending.maxClicks)
+    setUtm(pending.utm)
+    setUtmOpen(hasUtm(pending.utm))
+    if (
+      pending.alias ||
+      pending.preset !== 'never' ||
+      pending.tags.length ||
+      pending.maxClicks ||
+      pending.wantsPassword ||
+      hasUtm(pending.utm)
+    ) {
       setOptionsOpen(true)
     }
-    void performShorten(pending)
+
+    if (pending.wantsPassword && !password) {
+      // Lost across the Google redirect; don't silently create an open link.
+      setView({
+        kind: 'form',
+        error: 'Re-enter the link password, then shorten again. It isn’t kept across sign-in.',
+      })
+      return
+    }
+
+    if (password) {
+      setLinkPassword(password)
+    }
+    void performShorten(pending, password)
     // One-shot resume after sign-in; performShorten's identity doesn't matter.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status])
@@ -243,6 +307,11 @@ export function Home({ onRequireAuth, onOpenDashboard, onBusyChange }: HomeProps
     setAlias('')
     setPreset('never')
     setCustom('')
+    setTags([])
+    setMaxClicks('')
+    setLinkPassword('')
+    setUtm({})
+    setUtmOpen(false)
     setCopied(false)
     setShowQr(false)
     setView({ kind: 'form', error: null })
@@ -262,6 +331,10 @@ export function Home({ onRequireAuth, onOpenDashboard, onBusyChange }: HomeProps
     preset !== 'never'
       ? `expires ${EXPIRY_PRESETS.find((item) => item.value === preset)?.label.toLowerCase()}`
       : null,
+    maxClicks.trim() ? `${maxClicks.trim()} click limit` : null,
+    linkPassword ? 'password' : null,
+    tags.length ? `${tags.length} ${tags.length === 1 ? 'tag' : 'tags'}` : null,
+    hasUtm(utm) ? 'UTM' : null,
   ]
     .filter(Boolean)
     .join(' · ')
@@ -449,6 +522,94 @@ export function Home({ onRequireAuth, onOpenDashboard, onBusyChange }: HomeProps
                     />
                   ) : null}
                 </div>
+
+                <div className="option-pair">
+                  <div className="option">
+                    <label className="option-label" htmlFor="max-clicks">
+                      Click limit <span className="option-hint">optional</span>
+                    </label>
+                    <input
+                      id="max-clicks"
+                      className="field field-compact"
+                      type="number"
+                      inputMode="numeric"
+                      min={1}
+                      step={1}
+                      placeholder="Unlimited"
+                      value={maxClicks}
+                      disabled={loading}
+                      onChange={(event) => setMaxClicks(event.target.value)}
+                    />
+                  </div>
+                  <div className="option">
+                    <label className="option-label" htmlFor="link-password">
+                      Password <span className="option-hint">optional</span>
+                    </label>
+                    <input
+                      id="link-password"
+                      className="field field-compact"
+                      type="password"
+                      autoComplete="new-password"
+                      placeholder="No password"
+                      maxLength={128}
+                      value={linkPassword}
+                      disabled={loading}
+                      onChange={(event) => setLinkPassword(event.target.value)}
+                    />
+                  </div>
+                </div>
+
+                <div className="option">
+                  <label className="option-label" htmlFor="link-tags">
+                    Tags <span className="option-hint">enter or comma to add</span>
+                  </label>
+                  <TagInput id="link-tags" tags={tags} onChange={setTags} disabled={loading} />
+                </div>
+
+                <div className="option">
+                  <button
+                    className={`options-toggle options-toggle-inline${utmOpen ? ' is-open' : ''}`}
+                    type="button"
+                    aria-expanded={utmOpen}
+                    aria-controls="utm-fields"
+                    onClick={() => setUtmOpen((open) => !open)}
+                  >
+                    <ChevronIcon size={14} />
+                    UTM parameters
+                  </button>
+                  {utmOpen ? (
+                    <div id="utm-fields" className="utm">
+                      <div className="utm-grid">
+                        {UTM_FIELDS.map((field) => (
+                          <label key={field.key} className="utm-field">
+                            <span className="option-label">{field.label}</span>
+                            <input
+                              className="field field-compact"
+                              type="text"
+                              autoComplete="off"
+                              spellCheck={false}
+                              placeholder={field.placeholder}
+                              value={utm[field.key] ?? ''}
+                              disabled={loading}
+                              onChange={(event) =>
+                                setUtm((current) => ({ ...current, [field.key]: event.target.value }))
+                              }
+                            />
+                          </label>
+                        ))}
+                      </div>
+                      {hasUtm(utm) && probe.locked ? (
+                        <p className="option-status utm-preview" title={applyUtm(input, utm)}>
+                          → {applyUtm(input, utm)}
+                        </p>
+                      ) : (
+                        <p className="option-status">
+                          Added to the destination so analytics tools can attribute visits.
+                        </p>
+                      )}
+                    </div>
+                  ) : null}
+                </div>
               </div>
             ) : null}
 
@@ -517,6 +678,24 @@ export function Home({ onRequireAuth, onOpenDashboard, onBusyChange }: HomeProps
                   {view.created.expiresAt ? formatWhen(view.created.expiresAt) : 'Never'}
                 </dd>
               </div>
+              {view.created.maxClicks !== null ? (
+                <div>
+                  <dt>Click limit</dt>
+                  <dd>{view.created.maxClicks.toLocaleString()} visits</dd>
+                </div>
+              ) : null}
+              {view.created.hasPassword ? (
+                <div>
+                  <dt>Access</dt>
+                  <dd>Password protected</dd>
+                </div>
+              ) : null}
+              {view.created.tags.length ? (
+                <div>
+                  <dt>Tags</dt>
+                  <dd>{view.created.tags.join(', ')}</dd>
+                </div>
+              ) : null}
             </dl>
 
             <div className="result-actions">
@@ -532,6 +711,16 @@ export function Home({ onRequireAuth, onOpenDashboard, onBusyChange }: HomeProps
       </section>
     </>
   )
+}
+
+/** '' → null (unlimited); a positive integer → number; anything else → undefined. */
+function parseLimit(value: string): number | null | undefined {
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return null
+  }
+  const number = Number(trimmed)
+  return Number.isInteger(number) && number >= 1 ? number : undefined
 }
 
 function inspectUrl(value: string) {

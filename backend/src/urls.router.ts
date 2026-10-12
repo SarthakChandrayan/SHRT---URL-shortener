@@ -6,8 +6,10 @@ import type { ClickBreakdown } from "./click-analytics.js";
 import { HttpError, sendError } from "./errors.js";
 import { parseExpiresAt } from "./expires-at.js";
 import { parseOriginalUrl } from "./original-url.js";
+import { parseLinkPassword, parseMaxClicks, parseTags } from "./link-options.js";
 import { prisma } from "./prisma.js";
 import { createUrlLimiter } from "./rate-limit.js";
+import { hashLinkPassword } from "./secrets.js";
 import { generateShortCode } from "./short-code.js";
 import {
   getCachedUrlList,
@@ -16,6 +18,25 @@ import {
 } from "./urls-list-cache.js";
 
 const MAX_SHORT_CODE_ATTEMPTS = 5;
+
+const PUBLIC_URL_SELECT = {
+  id: true,
+  originalUrl: true,
+  shortCode: true,
+  createdAt: true,
+  expiresAt: true,
+  tags: true,
+  maxClicks: true,
+  passwordHash: true,
+} as const;
+
+/** Never send the password hash to clients; just whether one is set. */
+function toPublicUrl<T extends { passwordHash: string | null }>({
+  passwordHash,
+  ...url
+}: T) {
+  return { ...url, hasPassword: passwordHash !== null };
+}
 
 export const urlsRouter = Router();
 
@@ -63,13 +84,28 @@ urlsRouter.post("/", createUrlLimiter, requireAuth, async (req, res, next) => {
     return;
   }
 
+  const tags = parseTags(req.body?.tags);
+  const password = parseLinkPassword(req.body?.password);
+  const maxClicks = parseMaxClicks(req.body?.maxClicks);
+
+  for (const result of [tags, password, maxClicks]) {
+    if (!result.ok) {
+      sendError(res, 400, result.error);
+      return;
+    }
+  }
+
   try {
-    const url = await createUrl(
-      parsed.href,
-      req.userId!,
-      expiration.expiresAt,
-      alias.alias,
-    );
+    const url = await createUrl({
+      originalUrl: parsed.href,
+      userId: req.userId!,
+      expiresAt: expiration.expiresAt,
+      alias: alias.alias,
+      tags: tags.ok ? tags.value : [],
+      passwordHash:
+        password.ok && password.value ? await hashLinkPassword(password.value) : null,
+      maxClicks: maxClicks.ok ? maxClicks.value : null,
+    });
     invalidateUrlListCache(req.userId!);
     res.status(201).json(url);
   } catch (error) {
@@ -159,7 +195,7 @@ urlsRouter.patch("/:id", requireAuth, async (req, res, next) => {
   }
 
   const body = (req.body ?? {}) as Record<string, unknown>;
-  const data: { originalUrl?: string; expiresAt?: Date | null } = {};
+  const data: Prisma.UrlUpdateInput = {};
 
   if ("originalUrl" in body) {
     const parsed = parseOriginalUrl(body.originalUrl);
@@ -183,8 +219,46 @@ urlsRouter.patch("/:id", requireAuth, async (req, res, next) => {
     data.expiresAt = expiration.expiresAt;
   }
 
+  if ("tags" in body) {
+    const tags = parseTags(body.tags);
+
+    if (!tags.ok) {
+      sendError(res, 400, tags.error);
+      return;
+    }
+
+    data.tags = tags.value;
+  }
+
+  if ("maxClicks" in body) {
+    const maxClicks = parseMaxClicks(body.maxClicks);
+
+    if (!maxClicks.ok) {
+      sendError(res, 400, maxClicks.error);
+      return;
+    }
+
+    data.maxClicks = maxClicks.value;
+  }
+
+  // `password: null` removes protection; a string sets a new password.
+  if ("password" in body) {
+    const password = parseLinkPassword(body.password);
+
+    if (!password.ok) {
+      sendError(res, 400, password.error);
+      return;
+    }
+
+    data.passwordHash = password.value ? await hashLinkPassword(password.value) : null;
+  }
+
   if (Object.keys(data).length === 0) {
-    sendError(res, 400, "Provide originalUrl and/or expiresAt to update");
+    sendError(
+      res,
+      400,
+      "Provide at least one of originalUrl, expiresAt, tags, maxClicks or password",
+    );
     return;
   }
 
@@ -202,17 +276,11 @@ urlsRouter.patch("/:id", requireAuth, async (req, res, next) => {
     const url = await prisma.url.update({
       where: { id: existing.id },
       data,
-      select: {
-        id: true,
-        originalUrl: true,
-        shortCode: true,
-        createdAt: true,
-        expiresAt: true,
-      },
+      select: PUBLIC_URL_SELECT,
     });
 
     invalidateUrlListCache(req.userId!);
-    res.json(url);
+    res.json(toPublicUrl(url));
   } catch (error) {
     next(error);
   }
@@ -441,6 +509,9 @@ type UrlStatsRow = {
   shortCode: string;
   createdAt: Date;
   expiresAt: Date | null;
+  tags: string[] | null;
+  maxClicks: number | null;
+  hasPassword: boolean;
   clickCount: number;
   lastClickedAt: Date | null;
   devices: ClickBreakdown[] | null;
@@ -458,7 +529,10 @@ async function listOwnedUrlStats(userId: string) {
         "originalUrl",
         "shortCode",
         "createdAt",
-        "expiresAt"
+        "expiresAt",
+        tags,
+        "maxClicks",
+        "passwordHash" IS NOT NULL AS "hasPassword"
       FROM "Url"
       WHERE "userId" = ${userId}
     ),
@@ -567,6 +641,9 @@ async function listOwnedUrlStats(userId: string) {
       u."shortCode",
       u."createdAt",
       u."expiresAt",
+      u.tags,
+      u."maxClicks",
+      u."hasPassword",
       COALESCE(cs."clickCount", 0) AS "clickCount",
       cs."lastClickedAt",
       COALESCE(d.devices, '[]'::json) AS devices,
@@ -590,6 +667,9 @@ async function listOwnedUrlStats(userId: string) {
     shortCode: url.shortCode,
     createdAt: url.createdAt,
     expiresAt: url.expiresAt,
+    tags: url.tags ?? [],
+    maxClicks: url.maxClicks,
+    hasPassword: Boolean(url.hasPassword),
     clickCount: Number(url.clickCount),
     lastClickedAt: url.lastClickedAt,
     analytics: {
@@ -602,26 +682,24 @@ async function listOwnedUrlStats(userId: string) {
   }));
 }
 
-async function createUrl(
-  originalUrl: string,
-  userId: string,
-  expiresAt: Date | null,
-  alias: string | null,
-) {
-  const select = {
-    id: true,
-    originalUrl: true,
-    shortCode: true,
-    createdAt: true,
-    expiresAt: true,
-  } as const;
+type NewUrl = {
+  originalUrl: string;
+  userId: string;
+  expiresAt: Date | null;
+  alias: string | null;
+  tags: string[];
+  passwordHash: string | null;
+  maxClicks: number | null;
+};
 
+async function createUrl({ alias, ...fields }: NewUrl) {
   if (alias) {
     try {
-      return await prisma.url.create({
-        data: { originalUrl, userId, expiresAt, shortCode: alias },
-        select,
+      const url = await prisma.url.create({
+        data: { ...fields, shortCode: alias },
+        select: PUBLIC_URL_SELECT,
       });
+      return toPublicUrl(url);
     } catch (error) {
       if (isUniqueConflict(error)) {
         throw new HttpError(409, "That alias is already taken");
@@ -633,15 +711,11 @@ async function createUrl(
 
   for (let attempt = 0; attempt < MAX_SHORT_CODE_ATTEMPTS; attempt += 1) {
     try {
-      return await prisma.url.create({
-        data: {
-          originalUrl,
-          userId,
-          expiresAt,
-          shortCode: generateShortCode(),
-        },
-        select,
+      const url = await prisma.url.create({
+        data: { ...fields, shortCode: generateShortCode() },
+        select: PUBLIC_URL_SELECT,
       });
+      return toPublicUrl(url);
     } catch (error) {
       if (!isUniqueConflict(error)) {
         throw error;

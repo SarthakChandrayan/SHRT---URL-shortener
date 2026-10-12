@@ -1,6 +1,7 @@
 import "./env.js";
-import { rateLimit } from "express-rate-limit";
+import { ipKeyGenerator, rateLimit } from "express-rate-limit";
 import { sendError } from "./errors.js";
+import { sendTooManyAttempts } from "./redirect.js";
 
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
@@ -81,4 +82,17 @@ export const redirectHardLimiter = rateLimit({
   handler: (_req, res) => {
     sendError(res, 429, "Too many requests. Try again later.");
   },
+});
+
+/** Wrong-password guesses on protected links: 10 per IP per link per 15 min. */
+export const linkPasswordLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: "draft-8",
+  legacyHeaders: false,
+  keyGenerator: (req) => `${ipKeyGenerator(req.ip ?? "")}:${String(req.params.shortCode)}`,
+  // Correct passwords redirect (3xx) and shouldn't use up attempts.
+  skipSuccessfulRequests: true,
+  requestWasSuccessful: (_req, res) => res.statusCode < 400,
+  handler: sendTooManyAttempts,
 });

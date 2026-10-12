@@ -6,7 +6,7 @@ import {
   useState,
   type ReactNode,
 } from 'react'
-import { authClient, clearAccessToken } from './auth.ts'
+import { authClient, clearAccessToken, getAccessToken } from './auth.ts'
 
 export type AuthUser = {
   id: string
@@ -22,6 +22,12 @@ export type EmailAuthResult =
 export type ResetPasswordResult =
   | { kind: 'signed-in' }
   | { kind: 'reset' }
+  | { kind: 'error'; message: string }
+
+export type DeleteAccountResult =
+  | { kind: 'deleted' }
+  | { kind: 'verification-sent' }
+  | { kind: 'disabled' }
   | { kind: 'error'; message: string }
 
 export type VerifyEmailResult =
@@ -44,26 +50,56 @@ type AuthContextValue = {
   resendVerificationEmail: (email: string) => Promise<string | null>
   requestPasswordReset: (email: string) => Promise<string | null>
   resetPassword: (email: string, otp: string, password: string) => Promise<ResetPasswordResult>
+  changePassword: (currentPassword: string, newPassword: string) => Promise<string | null>
+  hasPasswordLogin: () => Promise<boolean | null>
+  deleteAccount: (password: string | null) => Promise<DeleteAccountResult>
   signInWithGoogle: () => Promise<string | null>
   signOut: () => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
 
-function errorMessage(error: { message?: string } | null | undefined, fallback: string) {
-  return error?.message?.trim() || fallback
+type AuthFailure = { status: number | null; code: string; message: string }
+
+/**
+ * Neon's auth client *throws* an AuthApiError for non-2xx responses (with a
+ * Supabase-style `code`, e.g. EMAIL_NOT_VERIFIED → "email_not_confirmed"),
+ * while plain Better Auth returns `{ error }`. Network failures throw a
+ * TypeError. This normalizes all of them; `null` means a network failure.
+ */
+function toFailure(error: unknown): AuthFailure | null {
+  if (!error || typeof error !== 'object' || error instanceof TypeError) {
+    return null
+  }
+
+  const record = error as { status?: unknown; code?: unknown; message?: unknown }
+  return {
+    status: typeof record.status === 'number' ? record.status : null,
+    code: typeof record.code === 'string' ? record.code.toLowerCase() : '',
+    message: typeof record.message === 'string' ? record.message.trim() : '',
+  }
 }
 
-function isUnverifiedEmailError(error: { code?: string; message?: string } | null | undefined) {
-  if (!error) {
+function errorMessage(error: unknown, fallback: string) {
+  const failure = toFailure(error)
+  if (!failure) {
+    return 'Could not reach the sign-in service. Check your connection and try again.'
+  }
+  return failure.message || fallback
+}
+
+function isUnverifiedEmailError(error: unknown) {
+  const failure = toFailure(error)
+  if (!failure) {
     return false
   }
 
-  const code = error.code?.toUpperCase() ?? ''
-  const message = error.message?.toLowerCase() ?? ''
+  const message = failure.message.toLowerCase()
   return (
-    code.includes('EMAIL_NOT_VERIFIED') ||
+    failure.code.includes('email_not_verified') ||
+    failure.code.includes('email_not_confirmed') ||
     message.includes('email not verified') ||
+    message.includes('email not confirmed') ||
     message.includes('verify your email')
   )
 }
@@ -117,8 +153,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return { kind: 'ok' }
       }
       return { kind: 'needs-verification' }
-    } catch {
-      return { kind: 'error', message: 'Could not reach the sign-up service' }
+    } catch (error) {
+      return { kind: 'error', message: errorMessage(error, 'Could not create your account') }
     }
   }
 
@@ -133,8 +169,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
       await refresh()
       return { kind: 'ok' }
-    } catch {
-      return { kind: 'error', message: 'Could not reach the sign-in service' }
+    } catch (error) {
+      if (isUnverifiedEmailError(error)) {
+        return { kind: 'needs-verification' }
+      }
+      return { kind: 'error', message: errorMessage(error, 'Could not sign in') }
     }
   }
 
@@ -146,8 +185,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
       const signedIn = await refresh()
       return signedIn ? { kind: 'signed-in' } : { kind: 'verified' }
-    } catch {
-      return { kind: 'error', message: 'Could not verify that code' }
+    } catch (error) {
+      return { kind: 'error', message: errorMessage(error, 'That code did not work') }
     }
   }
 
@@ -161,8 +200,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return errorMessage(result.error, 'Could not send a new code')
       }
       return null
-    } catch {
-      return 'Could not send a new code'
+    } catch (error) {
+      return errorMessage(error, 'Could not send a new code')
     }
   }
 
@@ -176,8 +215,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return errorMessage(result.error, 'Could not send a reset code')
       }
       return null
-    } catch {
-      return 'Could not reach the sign-in service'
+    } catch (error) {
+      return errorMessage(error, 'Could not send a reset code')
     }
   }
 
@@ -195,8 +234,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (result.error) {
         return { kind: 'error', message: errorMessage(result.error, 'Could not reset your password') }
       }
-    } catch {
-      return { kind: 'error', message: 'Could not reach the sign-in service' }
+    } catch (error) {
+      return { kind: 'error', message: errorMessage(error, 'Could not reset your password') }
     }
 
     // Resetting also verifies the email, so signing straight in should work.
@@ -214,6 +253,76 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch (error) {
       return error instanceof Error ? error.message : 'Could not sign in with Google'
     }
+  }
+
+  async function changePassword(currentPassword: string, newPassword: string) {
+    try {
+      const result = await authClient.changePassword({
+        currentPassword,
+        newPassword,
+        revokeOtherSessions: true,
+      })
+      if (result.error) {
+        return errorMessage(result.error, 'Could not change your password')
+      }
+      return null
+    } catch (error) {
+      return errorMessage(error, 'Could not change your password')
+    }
+  }
+
+  /** Whether the account has an email + password login (vs. Google only). */
+  async function hasPasswordLogin() {
+    try {
+      const { data } = await authClient.listAccounts()
+      if (!Array.isArray(data)) {
+        return null
+      }
+      return data.some(
+        (account: { providerId?: string }) => account.providerId === 'credential',
+      )
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * Deletes the Neon Auth user. The caller then deletes SHRT's data with the
+   * access token cached here first — it stays valid until it expires even
+   * though the session is gone.
+   */
+  async function deleteAccount(password: string | null): Promise<DeleteAccountResult> {
+    await getAccessToken()
+
+    let result: Awaited<ReturnType<typeof authClient.deleteUser>>
+
+    try {
+      result = await authClient.deleteUser(password ? { password } : {})
+    } catch (error) {
+      return deleteFailure(error)
+    }
+
+    if (result.error) {
+      return deleteFailure(result.error)
+    }
+
+    const message = (result.data as { message?: string } | null)?.message ?? ''
+    return /verification/i.test(message) ? { kind: 'verification-sent' } : { kind: 'deleted' }
+  }
+
+  function deleteFailure(error: unknown): DeleteAccountResult {
+    const failure = toFailure(error)
+
+    // Better Auth answers 404 when account deletion isn't enabled.
+    if (failure?.status === 404) {
+      return { kind: 'disabled' }
+    }
+
+    if (failure?.code.includes('session_expired') || /session.*expired/i.test(failure?.message ?? '')) {
+      return { kind: 'error', message: 'For your security, sign out and back in, then try again.' }
+    }
+
+    return { kind: 'error', message: errorMessage(error, 'Could not delete your account') }
   }
 
   async function signOut() {
@@ -237,6 +346,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         resendVerificationEmail,
         requestPasswordReset,
         resetPassword,
+        changePassword,
+        hasPasswordLogin,
+        deleteAccount,
         signInWithGoogle,
         signOut,
       }}

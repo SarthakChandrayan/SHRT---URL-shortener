@@ -6,12 +6,14 @@ import { Dashboard } from './Dashboard.tsx'
 import { Home } from './Home.tsx'
 import { clearPending } from './pending.ts'
 import { ProfileOverlay } from './ProfileOverlay.tsx'
+import { Settings } from './Settings.tsx'
 
-type Screen = 'home' | 'dashboard' | 'notfound'
+type Screen = 'home' | 'dashboard' | 'settings' | 'notfound'
 
 const TITLES: Record<Screen, string> = {
   home: 'SHRT — Short links with analytics',
   dashboard: 'Dashboard · SHRT',
+  settings: 'Settings · SHRT',
   notfound: 'Page not found · SHRT',
 }
 
@@ -22,7 +24,11 @@ function readScreen(): Screen {
     return 'home'
   }
 
-  return path === '/dashboard' ? 'dashboard' : 'notfound'
+  if (path === '/dashboard') {
+    return 'dashboard'
+  }
+
+  return path === '/settings' ? 'settings' : 'notfound'
 }
 
 function App() {
@@ -55,7 +61,7 @@ function App() {
   }, [status])
 
   const go = useCallback((next: Exclude<Screen, 'notfound'>) => {
-    const path = next === 'dashboard' ? '/dashboard' : '/'
+    const path = next === 'home' ? '/' : `/${next}`
     if (window.location.pathname !== path) {
       window.history.pushState(null, '', path)
     }
@@ -142,6 +148,8 @@ function App() {
       <main className="main" id="main">
         {screen === 'dashboard' ? (
           <Dashboard onCreate={() => go('home')} onSignIn={() => setAuthOpen(true)} />
+        ) : screen === 'settings' ? (
+          <Settings onSignIn={() => setAuthOpen(true)} onDeleted={() => go('home')} />
         ) : screen === 'notfound' ? (
           <NotFound onHome={() => go('home')} />
         ) : (
@@ -178,6 +186,10 @@ function App() {
         onOpenDashboard={() => {
           setProfileOpen(false)
           go('dashboard')
+        }}
+        onOpenSettings={() => {
+          setProfileOpen(false)
+          go('settings')
         }}
       />
     </div>

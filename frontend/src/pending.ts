@@ -1,4 +1,5 @@
 import { EXPIRY_PRESETS, type ExpiryPreset } from './format.ts'
+import { UTM_FIELDS, type UtmParams } from './utm.ts'
 
 // A shorten request made while signed out, resumed after sign-in — even
 // across a full-page Google OAuth redirect.
@@ -9,9 +10,25 @@ export type PendingShorten = {
   alias: string
   preset: ExpiryPreset
   custom: string
+  tags: string[]
+  maxClicks: string
+  utm: UtmParams
+  /** The link password itself is never written to storage (see below). */
+  wantsPassword: boolean
 }
 
-export function savePending(pending: PendingShorten) {
+// Kept in memory only, so it survives an in-page email sign-in but not a
+// full-page Google redirect — in that case the user is asked to re-enter it.
+let pendingPassword: string | null = null
+
+export function takePendingPassword(): string | null {
+  const password = pendingPassword
+  pendingPassword = null
+  return password
+}
+
+export function savePending(pending: PendingShorten, password: string | null) {
+  pendingPassword = password
   try {
     window.sessionStorage.setItem(PENDING_KEY, JSON.stringify(pending))
   } catch {
@@ -20,6 +37,7 @@ export function savePending(pending: PendingShorten) {
 }
 
 export function clearPending() {
+  pendingPassword = null
   try {
     window.sessionStorage.removeItem(PENDING_KEY)
   } catch {
@@ -48,6 +66,17 @@ export function readPending(): PendingShorten | null {
       alias: typeof value.alias === 'string' ? value.alias : '',
       preset,
       custom: typeof value.custom === 'string' ? value.custom : '',
+      tags: Array.isArray(value.tags)
+        ? value.tags.filter((tag): tag is string => typeof tag === 'string')
+        : [],
+      maxClicks: typeof value.maxClicks === 'string' ? value.maxClicks : '',
+      utm: Object.fromEntries(
+        UTM_FIELDS.flatMap(({ key }) => {
+          const field = value.utm?.[key]
+          return typeof field === 'string' ? [[key, field]] : []
+        }),
+      ),
+      wantsPassword: value.wantsPassword === true,
     }
   } catch {
     return null

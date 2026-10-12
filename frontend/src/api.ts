@@ -6,6 +6,9 @@ export type CreatedUrl = {
   shortCode: string
   createdAt: string
   expiresAt: string | null
+  tags: string[]
+  maxClicks: number | null
+  hasPassword: boolean
 }
 
 export type ClickBreakdown = {
@@ -93,6 +96,9 @@ export function getShortUrl(shortCode: string): string {
 export type CreateUrlOptions = {
   alias?: string | null
   expiresAt?: string | null
+  tags?: string[]
+  password?: string | null
+  maxClicks?: number | null
 }
 
 export async function createShortUrl(
@@ -106,6 +112,9 @@ export async function createShortUrl(
       originalUrl,
       alias: options.alias?.trim() || undefined,
       expiresAt: options.expiresAt ?? undefined,
+      tags: options.tags?.length ? options.tags : undefined,
+      password: options.password || undefined,
+      maxClicks: options.maxClicks ?? undefined,
     }),
   })
 
@@ -113,7 +122,7 @@ export async function createShortUrl(
     throw new ApiError('Unexpected response from the server')
   }
 
-  return payload
+  return withLinkDefaults(payload)
 }
 
 let listUrlsInflight: Promise<UrlStats[]> | null = null
@@ -134,7 +143,7 @@ export function listUrls(): Promise<UrlStats[]> {
         throw new ApiError('Unexpected response from the server')
       }
 
-      return payload
+      return payload.map(withLinkDefaults)
     } finally {
       listUrlsInflight = null
     }
@@ -168,6 +177,10 @@ export async function getUrlAnalytics(
 export type UrlPatch = {
   originalUrl?: string
   expiresAt?: string | null
+  tags?: string[]
+  /** A new password, or `null` to remove protection. */
+  password?: string | null
+  maxClicks?: number | null
 }
 
 export async function updateUrl(id: string, patch: UrlPatch): Promise<CreatedUrl> {
@@ -181,7 +194,82 @@ export async function updateUrl(id: string, patch: UrlPatch): Promise<CreatedUrl
     throw new ApiError('Unexpected response from the server')
   }
 
-  return payload
+  return withLinkDefaults(payload)
+}
+
+export type ApiKey = {
+  id: string
+  name: string
+  prefix: string
+  createdAt: string
+  lastUsedAt: string | null
+}
+
+export async function listApiKeys(): Promise<ApiKey[]> {
+  const payload = await requestJson('/api/account/keys', {
+    cache: 'no-store',
+    headers: await authHeader(),
+  })
+
+  if (!Array.isArray(payload)) {
+    throw new ApiError('Unexpected response from the server')
+  }
+
+  return payload as ApiKey[]
+}
+
+/** Returns the new key's plaintext value — the only time it's available. */
+export async function createApiKey(name: string): Promise<ApiKey & { key: string }> {
+  const payload = await requestJson('/api/account/keys', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(await authHeader()) },
+    body: JSON.stringify({ name }),
+  })
+
+  if (
+    payload === null ||
+    typeof payload !== 'object' ||
+    typeof (payload as { key?: unknown }).key !== 'string'
+  ) {
+    throw new ApiError('Unexpected response from the server')
+  }
+
+  return payload as ApiKey & { key: string }
+}
+
+export async function revokeApiKey(id: string): Promise<void> {
+  await requestJson(`/api/account/keys/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    headers: await authHeader(),
+  })
+}
+
+/** Downloads everything stored about the account as a JSON file. */
+export async function downloadAccountExport(): Promise<void> {
+  const payload = await requestJson('/api/account/export', {
+    cache: 'no-store',
+    headers: await authHeader(),
+  })
+
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+  downloadBlob(blob, `shrt-export-${new Date().toISOString().slice(0, 10)}.json`)
+}
+
+/** Deletes the account's links, clicks, and API keys from the SHRT API. */
+export async function deleteAccountData(): Promise<void> {
+  await requestJson('/api/account', {
+    method: 'DELETE',
+    headers: await authHeader(),
+  })
+}
+
+export function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  link.click()
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
 export async function deleteUrl(id: string): Promise<void> {
@@ -273,6 +361,10 @@ function messageForStatus(status: number, payload: unknown): string {
     return readErrorMessage(payload) ?? 'Sign in to continue'
   }
 
+  if (status === 403) {
+    return readErrorMessage(payload) ?? 'You don’t have access to do that'
+  }
+
   if (status === 409) {
     return readErrorMessage(payload) ?? 'That alias is already taken'
   }
@@ -296,6 +388,16 @@ function readErrorMessage(payload: unknown): string | null {
   }
 
   return null
+}
+
+/** Tolerates an older API that doesn't return the newer link fields yet. */
+function withLinkDefaults<T extends CreatedUrl>(url: T): T {
+  return {
+    ...url,
+    tags: Array.isArray(url.tags) ? url.tags : [],
+    maxClicks: typeof url.maxClicks === 'number' ? url.maxClicks : null,
+    hasPassword: url.hasPassword === true,
+  }
 }
 
 function isCreatedUrl(payload: unknown): payload is CreatedUrl {

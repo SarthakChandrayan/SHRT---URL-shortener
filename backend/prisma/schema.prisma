@@ -14,8 +14,23 @@ model Url {
   shortCode   String    @unique
   userId      String?
   createdAt   DateTime  @default(now())
-  expiresAt   DateTime?
-  clicks      Click[]
+  expiresAt    DateTime?
+  tags         String[]  @default([])
+  passwordHash String?
+  maxClicks    Int?
+  clicks       Click[]
+
+  @@index([userId])
+}
+
+model ApiKey {
+  id         String    @id @default(cuid())
+  userId     String
+  name       String
+  prefix     String
+  keyHash    String    @unique
+  createdAt  DateTime  @default(now())
+  lastUsedAt DateTime?
 
   @@index([userId])
 }

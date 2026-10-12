@@ -1,8 +1,9 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
-import { getShortUrl, listUrls, type ClickBreakdown, type UrlStats } from './api.ts'
+import { downloadBlob, getShortUrl, listUrls, type ClickBreakdown, type UrlStats } from './api.ts'
 import { useAuth } from './AuthContext.tsx'
 import { copyText } from './copy.ts'
 import { displayHost, formatWhen, isExpired, plural, relativeTime } from './format.ts'
+import { linksToCsv } from './csv.ts'
 import {
   ChevronIcon,
   CopyIcon,
@@ -14,6 +15,8 @@ import {
   SearchIcon,
   TrashIcon,
   CheckIcon,
+  DownloadIcon,
+  LockIcon,
 } from './icons.tsx'
 import { DeleteLinkModal, EditLinkModal, QrModal } from './LinkModals.tsx'
 import { useToast } from './Toast.tsx'
@@ -46,6 +49,7 @@ export function Dashboard({ onCreate, onSignIn }: DashboardProps) {
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<Filter>('all')
   const [sort, setSort] = useState<Sort>('newest')
+  const [tagFilter, setTagFilter] = useState('')
 
   const load = useCallback(async () => {
     try {
@@ -103,7 +107,10 @@ export function Dashboard({ onCreate, onSignIn }: DashboardProps) {
     const needle = query.trim().toLowerCase()
 
     const filtered = urls.filter((url) => {
-      const expired = isExpired(url.expiresAt)
+      if (tagFilter && !url.tags.includes(tagFilter)) {
+        return false
+      }
+      const expired = isInactive(url)
       if (filter === 'active' && expired) {
         return false
       }
@@ -113,7 +120,8 @@ export function Dashboard({ onCreate, onSignIn }: DashboardProps) {
       return (
         !needle ||
         url.shortCode.toLowerCase().includes(needle) ||
-        url.originalUrl.toLowerCase().includes(needle)
+        url.originalUrl.toLowerCase().includes(needle) ||
+        url.tags.some((tag) => tag.includes(needle))
       )
     })
 
@@ -131,7 +139,19 @@ export function Dashboard({ onCreate, onSignIn }: DashboardProps) {
           return time(b.createdAt) - time(a.createdAt)
       }
     })
-  }, [urls, query, filter, sort])
+  }, [urls, query, filter, sort, tagFilter])
+
+  const allTags = useMemo(
+    () => [...new Set(urls.flatMap((url) => url.tags))].sort(),
+    [urls],
+  )
+
+  function handleExportCsv() {
+    const rows = visible.length ? visible : urls
+    const blob = new Blob([linksToCsv(rows, getShortUrl)], { type: 'text/csv;charset=utf-8' })
+    downloadBlob(blob, `shrt-links-${new Date().toISOString().slice(0, 10)}.csv`)
+    toast(`Exported ${plural(rows.length, 'link')}`)
+  }
 
   async function handleCopy(id: string, shortUrl: string) {
     try {
@@ -182,7 +202,7 @@ export function Dashboard({ onCreate, onSignIn }: DashboardProps) {
   }
 
   const totalClicks = urls.reduce((sum, url) => sum + url.clickCount, 0)
-  const activeCount = urls.filter((url) => !isExpired(url.expiresAt)).length
+  const activeCount = urls.filter((url) => !isInactive(url)).length
   const topLink = urls.reduce<UrlStats | null>(
     (best, url) => (url.clickCount > (best?.clickCount ?? 0) ? url : best),
     null,
@@ -209,6 +229,17 @@ export function Dashboard({ onCreate, onSignIn }: DashboardProps) {
           >
             <RefreshIcon size={16} className={refreshing ? 'spin' : undefined} />
           </button>
+          {urls.length > 0 ? (
+            <button
+              className="icon-button"
+              type="button"
+              aria-label="Export links as CSV"
+              title="Export CSV (current filters)"
+              onClick={handleExportCsv}
+            >
+              <DownloadIcon size={16} />
+            </button>
+          ) : null}
           <button className="button button-primary button-compact" type="button" onClick={onCreate}>
             <PlusIcon size={14} />
             New link
@@ -251,7 +282,7 @@ export function Dashboard({ onCreate, onSignIn }: DashboardProps) {
             <Stat
               label="Active"
               value={activeCount.toLocaleString()}
-              hint={urls.length > activeCount ? `${urls.length - activeCount} expired` : undefined}
+              hint={urls.length > activeCount ? `${urls.length - activeCount} inactive` : undefined}
             />
             <Stat
               label="Top link"
@@ -267,7 +298,7 @@ export function Dashboard({ onCreate, onSignIn }: DashboardProps) {
               <span className="label">Search links</span>
               <input
                 type="search"
-                placeholder="Search by alias or destination"
+                placeholder="Search by alias, destination or tag"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
               />
@@ -282,10 +313,24 @@ export function Dashboard({ onCreate, onSignIn }: DashboardProps) {
                   aria-checked={filter === value}
                   onClick={() => setFilter(value)}
                 >
-                  {value[0].toUpperCase() + value.slice(1)}
+                  {value === 'expired' ? 'Inactive' : value[0].toUpperCase() + value.slice(1)}
                 </button>
               ))}
             </div>
+            {allTags.length ? (
+              <label className="select">
+                <span className="label">Filter by tag</span>
+                <select value={tagFilter} onChange={(event) => setTagFilter(event.target.value)}>
+                  <option value="">All tags</option>
+                  {allTags.map((tag) => (
+                    <option key={tag} value={tag}>
+                      #{tag}
+                    </option>
+                  ))}
+                </select>
+                <ChevronIcon size={14} />
+              </label>
+            ) : null}
             <label className="select">
               <span className="label">Sort links</span>
               <select value={sort} onChange={(event) => setSort(event.target.value as Sort)}>
@@ -308,6 +353,7 @@ export function Dashboard({ onCreate, onSignIn }: DashboardProps) {
                   onClick={() => {
                     setQuery('')
                     setFilter('all')
+                    setTagFilter('')
                   }}
                 >
                   Clear filters
@@ -396,10 +442,13 @@ type LinkCardProps = {
 function LinkCard({ url, open, copied, onToggle, onCopy, onDialog }: LinkCardProps) {
   const shortUrl = getShortUrl(url.shortCode)
   const expired = isExpired(url.expiresAt)
+  const limitReached = url.maxClicks !== null && url.clickCount >= url.maxClicks
   const detailsId = `link-details-${url.id}`
 
   return (
-    <li className={`link-card${open ? ' is-open' : ''}${expired ? ' is-expired' : ''}`}>
+    <li
+      className={`link-card${open ? ' is-open' : ''}${expired || limitReached ? ' is-expired' : ''}`}
+    >
       <div className="link-row">
         <div className="link-main">
           <div className="link-title">
@@ -413,6 +462,22 @@ function LinkCard({ url, open, copied, onToggle, onCopy, onDialog }: LinkCardPro
                 Expires {relativeTime(url.expiresAt)}
               </span>
             ) : null}
+            {url.maxClicks !== null ? (
+              <span
+                className={`badge${limitReached ? ' badge-expired' : ''}`}
+                title="Visits used of the click limit"
+              >
+                {limitReached
+                  ? 'Limit reached'
+                  : `${url.clickCount.toLocaleString()}/${url.maxClicks.toLocaleString()}`}
+              </span>
+            ) : null}
+            {url.hasPassword ? (
+              <span className="badge badge-icon" title="Password protected">
+                <LockIcon size={11} />
+                <span className="label">Password protected</span>
+              </span>
+            ) : null}
           </div>
           <p className="original" title={url.originalUrl}>
             <span className="original-host">{displayHost(url.originalUrl)}</span>
@@ -422,6 +487,15 @@ function LinkCard({ url, open, copied, onToggle, onCopy, onDialog }: LinkCardPro
             Created {relativeTime(url.createdAt)}
             {url.lastClickedAt ? ` · Last click ${relativeTime(url.lastClickedAt)}` : ''}
           </p>
+          {url.tags.length ? (
+            <ul className="tag-list" aria-label="Tags">
+              {url.tags.map((tag) => (
+                <li key={tag} className="tag">
+                  #{tag}
+                </li>
+              ))}
+            </ul>
+          ) : null}
         </div>
         <div className="link-aside">
           <button
@@ -572,6 +646,11 @@ function BreakdownRow({ label, count, total }: { label: string; count: number; t
       </span>
     </li>
   )
+}
+
+/** Expired, or out of allowed clicks — either way, visitors can't get through. */
+function isInactive(url: UrlStats): boolean {
+  return isExpired(url.expiresAt) || (url.maxClicks !== null && url.clickCount >= url.maxClicks)
 }
 
 function displayLabel(label: string): string {

@@ -10,9 +10,12 @@ A URL shortener with custom aliases, expiring links, QR codes and click analytic
 
 - Shorten any HTTP(S) URL, with an optional custom alias (`/my-launch`) and live availability check
 - Expiry presets (1 hour → 30 days) or a custom date; expired links show visitors a branded page
+- Password-protected links and click limits (e.g. stop after 100 visits)
+- Tags with filtering, a UTM builder on the create form, and CSV export of your links
 - Dashboard with totals, search, filters and sorting; edit a link's destination or expiry, or delete it
 - Per-link analytics: clicks over 7/30/90 days, devices, browsers, OS, referrers, countries
 - QR code for every link, downloadable as PNG
+- Settings: change password, API keys for scripts, full JSON data export, account deletion
 - Rate limiting on link creation and redirects, security headers, graceful shutdown, health probes
 
 ## Local development
@@ -40,17 +43,22 @@ npm run dev:frontend                     # http://localhost:5173 (proxies /api)
 
 ## API
 
-All `/api/urls` routes need `Authorization: Bearer <Neon Auth JWT>`.
+`/api/urls` routes accept `Authorization: Bearer <Neon Auth JWT>` or `Bearer <API key>` (create keys in Settings). `/api/account` routes require a signed-in session; API keys are rejected there.
 
 | Method | Path | Notes |
 | --- | --- | --- |
 | `GET` | `/api/urls` | Your links with click stats |
-| `POST` | `/api/urls` | `{ originalUrl, alias?, expiresAt? }` → `201`; `409` if the alias is taken |
+| `POST` | `/api/urls` | `{ originalUrl, alias?, expiresAt?, tags?, maxClicks?, password? }` → `201`; `409` if the alias is taken |
 | `GET` | `/api/urls/alias-availability?alias=x` | `{ available, reason? }` |
-| `PATCH` | `/api/urls/:id` | Any of `{ originalUrl, expiresAt }` (`expiresAt: null` removes expiry) |
+| `PATCH` | `/api/urls/:id` | Any of `{ originalUrl, expiresAt, tags, maxClicks, password }`; `null` clears expiry, limit or password |
 | `DELETE` | `/api/urls/:id` | `204`; also deletes the link's click history |
 | `GET` | `/api/urls/:id/analytics?startDate&endDate` | Daily clicks + devices, up to 90 days |
-| `GET` | `/:shortCode` | `302` to the destination; `404`/`410` as HTML for browsers, JSON otherwise |
+| `GET` | `/:shortCode` | `302` to the destination; `404`/`410` (expired or click limit reached) as HTML for browsers, JSON otherwise; protected links show a password form |
+| `POST` | `/:shortCode` | `password` (form or JSON) unlocks a protected link → `303`; 10 wrong tries per IP per 15 min |
+| `GET`/`POST` | `/api/account/keys` | List keys / create one with `{ name }` (the key is only returned once) |
+| `DELETE` | `/api/account/keys/:id` | Revoke a key |
+| `GET` | `/api/account/export` | All your links, settings and clicks as JSON |
+| `DELETE` | `/api/account` | Delete all your links, clicks and API keys |
 | `GET` | `/health`, `/health/ready` | Liveness, and readiness (checks the database) |
 
 ## Deploying

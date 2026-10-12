@@ -3,9 +3,11 @@ import cors from "cors";
 import express from "express";
 import { errorMiddleware, sendError } from "./errors.js";
 import { prisma } from "./prisma.js";
-import { redirectToOriginalUrl } from "./redirect.js";
+import { accountRouter } from "./account.router.js";
+import { redirectToOriginalUrl, unlockProtectedLink } from "./redirect.js";
 import {
   isTrustProxyEnabled,
+  linkPasswordLimiter,
   redirectClickLimiter,
   redirectClickMax,
   redirectHardLimiter,
@@ -54,11 +56,20 @@ app.get("/health/ready", async (_req, res) => {
 });
 
 app.use("/api/urls", urlsRouter);
+app.use("/api/account", accountRouter);
 app.use("/api", (_req, res) => {
   sendError(res, 404, "Not found");
 });
 
 app.get("/:shortCode", redirectHardLimiter, redirectClickLimiter, redirectToOriginalUrl);
+app.post(
+  "/:shortCode",
+  express.urlencoded({ extended: false, limit: "2kb" }),
+  redirectHardLimiter,
+  linkPasswordLimiter,
+  redirectClickLimiter,
+  unlockProtectedLink,
+);
 
 app.use(errorMiddleware);
 
